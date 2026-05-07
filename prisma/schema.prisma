@@ -1,0 +1,254 @@
+// 需要在 .env 中配置 DATABASE_URL，格式：mysql://用户名:密码@localhost:3306/数据库名
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  USER
+  RUNNER
+  ADMIN
+}
+
+enum OrderStatus {
+  PENDING
+  ACCEPTED
+  PICKED
+  DELIVERING
+  COMPLETED
+  CANCELLED
+}
+
+enum TaskStatus {
+  PENDING
+  ACCEPTED
+  COMPLETED
+  CANCELLED
+}
+
+model User {
+  id           Int      @id @default(autoincrement())
+  student_id   String?  @unique
+  phone        String?  @unique
+  password_hash String?
+  nickname     String?
+  avatar       String?
+  role         Role     @default(USER)
+  status       Int      @default(1)
+  credit_score Int      @default(0)
+ 
+  created_at   DateTime @default(now())
+  updated_at   DateTime @default(now()) @updatedAt
+
+  auth         UserAuth?
+  wallet       UserWallet?
+  tasks        Task[]   @relation("TaskPublisher")
+  orders_taken Order[]  @relation("OrderTaker")
+  earnings     Earning[]
+  withdraws    Withdraw[] @relation("WithdrawUser")
+  withdraw_audits Withdraw[] @relation("WithdrawAuditAdmin")
+  admin_logs   AdminLog[]
+
+  @@map("users")
+}
+
+model UserAuth {
+  id            Int      @id @default(autoincrement())
+  user_id       Int      @unique
+  real_name     String
+  card_image_url String
+  audit_status  String
+  created_at    DateTime @default(now())
+  updated_at    DateTime @default(now()) @updatedAt
+
+  user User @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([user_id])
+  @@map("user_auths")
+}
+
+model UserWallet {
+  id         Int      @id @default(autoincrement())
+  user_id    Int      @unique
+  balance    Decimal  @default(0) @db.Decimal(12, 2)
+  frozen     Decimal  @default(0) @db.Decimal(12, 2)
+  created_at DateTime @default(now())
+  updated_at DateTime @default(now()) @updatedAt
+
+  user User       @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  logs WalletLog[]
+
+  @@index([user_id])
+  @@map("user_wallets")
+}
+
+model WalletLog {
+  id             Int      @id @default(autoincrement())
+  wallet_id      Int
+  type           String
+  amount         Decimal  @db.Decimal(12, 2)
+  ref_order_id   Int?
+  before_balance Decimal  @db.Decimal(12, 2)
+  after_balance  Decimal  @db.Decimal(12, 2)
+  created_at     DateTime @default(now())
+  updated_at     DateTime @default(now()) @updatedAt
+
+  wallet UserWallet @relation(fields: [wallet_id], references: [id], onDelete: Cascade)
+  ref_order Order?  @relation("WalletLogOrder", fields: [ref_order_id], references: [id], onDelete: SetNull)
+
+  @@index([wallet_id])
+  @@index([ref_order_id])
+  @@map("wallet_logs")
+}
+
+model Task {
+  id               Int       @id @default(autoincrement())
+  publisher_id     Int
+  pickup_address   String
+  pickup_lat       Decimal?  @db.Decimal(10, 6)
+  pickup_lng       Decimal?  @db.Decimal(10, 6)
+  delivery_address String
+  delivery_lat     Decimal?  @db.Decimal(10, 6)
+  delivery_lng     Decimal?  @db.Decimal(10, 6)
+  type             String
+  urgency          Int       @default(0)
+  remark           String?   @db.Text
+  images_json      Json?
+  fee_total        Decimal   @default(0) @db.Decimal(12, 2)
+  tip              Decimal   @default(0) @db.Decimal(12, 2)
+  status           TaskStatus @default(PENDING)
+  created_at       DateTime  @default(now())
+  updated_at       DateTime  @default(now()) @updatedAt
+
+  publisher User    @relation("TaskPublisher", fields: [publisher_id], references: [id], onDelete: Restrict)
+  orders    Order[]
+
+  @@index([publisher_id])
+  @@map("tasks")
+}
+
+model Order {
+  id            Int        @id @default(autoincrement())
+  task_id       Int
+  taker_id      Int?
+  status        OrderStatus @default(PENDING)
+  accept_time   DateTime?
+  pickup_time   DateTime?
+  delivery_time DateTime?
+  complete_time DateTime?
+  eta_minutes   Int?
+  final_price   Decimal?   @db.Decimal(12, 2)
+  created_at    DateTime   @default(now())
+  updated_at    DateTime   @default(now()) @updatedAt
+
+  task   Task   @relation(fields: [task_id], references: [id], onDelete: Cascade)
+  taker  User?  @relation("OrderTaker", fields: [taker_id], references: [id], onDelete: SetNull)
+  track  OrderTrack?
+  review OrderReview?
+  earnings Earning[]
+  wallet_logs WalletLog[] @relation("WalletLogOrder")
+
+  @@index([task_id])
+  @@index([taker_id])
+  @@map("orders")
+}
+
+model OrderTrack {
+  id                   Int      @id @default(autoincrement())
+  order_id             Int      @unique
+  pickup_photo_url     String?
+  delivery_photo_url   String?
+  location_points_json Json?
+  created_at           DateTime @default(now())
+  updated_at           DateTime @default(now()) @updatedAt
+
+  order Order @relation(fields: [order_id], references: [id], onDelete: Cascade)
+
+  @@index([order_id])
+  @@map("order_tracks")
+}
+
+model OrderReview {
+  id         Int      @id @default(autoincrement())
+  order_id   Int      @unique
+  rating     Int
+  tags_json  Json?
+  comment    String?  @db.Text
+  created_at DateTime @default(now())
+  updated_at DateTime @default(now()) @updatedAt
+
+  order Order @relation(fields: [order_id], references: [id], onDelete: Cascade)
+
+  @@index([order_id])
+  @@map("order_reviews")
+}
+
+model Earning {
+  id         Int      @id @default(autoincrement())
+  user_id    Int
+  order_id   Int?
+  amount     Decimal  @db.Decimal(12, 2)
+  type       String
+  status     String
+  settled_at DateTime?
+  created_at DateTime @default(now())
+  updated_at DateTime @default(now()) @updatedAt
+
+  user  User   @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  order Order? @relation(fields: [order_id], references: [id], onDelete: SetNull)
+
+  @@index([user_id])
+  @@index([order_id])
+  @@map("earnings")
+}
+
+model Withdraw {
+  id             Int      @id @default(autoincrement())
+  user_id         Int
+  amount         Decimal  @db.Decimal(12, 2)
+  status         String
+  apply_time     DateTime?
+  audit_time     DateTime?
+  audit_admin_id Int?
+  created_at     DateTime @default(now())
+  updated_at     DateTime @default(now()) @updatedAt
+
+  user       User  @relation("WithdrawUser", fields: [user_id], references: [id], onDelete: Cascade)
+  audit_admin User? @relation("WithdrawAuditAdmin", fields: [audit_admin_id], references: [id], onDelete: SetNull)
+
+  @@index([user_id])
+  @@index([audit_admin_id])
+  @@map("withdraws")
+}
+
+model SystemConfig {
+  id         Int      @id @default(autoincrement())
+  key        String   @unique
+  value      String   @db.Text
+  created_at DateTime @default(now())
+  updated_at DateTime @default(now()) @updatedAt
+
+  @@map("system_configs")
+}
+
+model AdminLog {
+  id          Int      @id @default(autoincrement())
+  admin_id    Int
+  action      String
+  target_type String
+  target_id   Int?
+  detail_json Json?
+  created_at  DateTime @default(now())
+  updated_at  DateTime @default(now()) @updatedAt
+
+  admin User @relation(fields: [admin_id], references: [id], onDelete: Cascade)
+
+  @@index([admin_id])
+  @@index([target_type, target_id])
+  @@map("admin_logs")
+}
