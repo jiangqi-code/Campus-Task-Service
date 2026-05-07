@@ -26,9 +26,16 @@ enum OrderStatus {
 
 enum TaskStatus {
   PENDING
+  SCHEDULED
   ACCEPTED
   COMPLETED
   CANCELLED
+}
+
+enum RefundStatus {
+  PENDING
+  APPROVED
+  REJECTED
 }
 
 model User {
@@ -52,6 +59,9 @@ model User {
   earnings     Earning[]
   withdraws    Withdraw[] @relation("WithdrawUser")
   withdraw_audits Withdraw[] @relation("WithdrawAuditAdmin")
+  refunds_applied Refund[] @relation("RefundUser")
+  refunds_as_runner Refund[] @relation("RefundRunner")
+  refund_audits Refund[] @relation("RefundAuditAdmin")
   admin_logs   AdminLog[]
 
   @@map("users")
@@ -119,9 +129,14 @@ model Task {
   urgency          Int       @default(0)
   remark           String?   @db.Text
   images_json      Json?
+  weight           String?   @db.VarChar(50)
+  size             String?   @db.VarChar(100)
+  is_fragile       Boolean?  @default(false)
+  need_inspection  Boolean?  @default(false)
   fee_total        Decimal   @default(0) @db.Decimal(12, 2)
   tip              Decimal   @default(0) @db.Decimal(12, 2)
   status           TaskStatus @default(PENDING)
+  scheduled_time   DateTime?
   created_at       DateTime  @default(now())
   updated_at       DateTime  @default(now()) @updatedAt
 
@@ -152,6 +167,7 @@ model Order {
   review OrderReview?
   earnings Earning[]
   wallet_logs WalletLog[] @relation("WalletLogOrder")
+  refund Refund?
 
   @@index([task_id])
   @@index([taker_id])
@@ -226,6 +242,32 @@ model Withdraw {
   @@map("withdraws")
 }
 
+model Refund {
+  id             Int          @id @default(autoincrement())
+  order_id        Int          @unique
+  user_id        Int
+  runner_id      Int
+  amount         Decimal      @db.Decimal(12, 2)
+  reason         String       @db.Text
+  status         RefundStatus @default(PENDING)
+  apply_time     DateTime     @default(now())
+  audit_time     DateTime?
+  audit_admin_id Int?
+  created_at     DateTime     @default(now())
+  updated_at     DateTime     @default(now()) @updatedAt
+
+  order       Order @relation(fields: [order_id], references: [id], onDelete: Cascade)
+  user        User  @relation("RefundUser", fields: [user_id], references: [id], onDelete: Cascade)
+  runner      User  @relation("RefundRunner", fields: [runner_id], references: [id], onDelete: Restrict)
+  audit_admin User? @relation("RefundAuditAdmin", fields: [audit_admin_id], references: [id], onDelete: SetNull)
+
+  @@index([user_id])
+  @@index([runner_id])
+  @@index([status])
+  @@index([audit_admin_id])
+  @@map("refunds")
+}
+
 model SystemConfig {
   id         Int      @id @default(autoincrement())
   key        String   @unique
@@ -233,7 +275,7 @@ model SystemConfig {
   created_at DateTime @default(now())
   updated_at DateTime @default(now()) @updatedAt
 
-  @@map("system_configs")
+  @@map("system_config")
 }
 
 model AdminLog {

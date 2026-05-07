@@ -1,3 +1,4 @@
+// @ts-ignore  // 临时忽略缺少类型声明的问题，建议后续添加 @prisma/client 的类型声明文件
 import { OrderStatus, Prisma, PrismaClient, TaskStatus } from "@prisma/client";
 
 export class WalletError extends Error {
@@ -11,6 +12,19 @@ export class WalletError extends Error {
 
 const prisma = new PrismaClient();
 
+const toOptionalDecimal = (value?: string | number | null) => {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value === "number" && Number.isFinite(value)) return new Prisma.Decimal(value);
+  if (typeof value === "string" && value.trim()) return new Prisma.Decimal(value.trim());
+  throw new WalletError(400, "金额格式不正确");
+};
+
+const toRequiredDecimal = (value: string | number) => {
+  const dec = toOptionalDecimal(value);
+  if (!dec) throw new WalletError(400, "amount 为必填");
+  return dec;
+};
+
 export const settleOrderOnConfirm = async (orderId: number, confirmerUserId: number) => {
   if (!Number.isFinite(orderId) || orderId <= 0) {
     throw new WalletError(400, "orderId 不合法");
@@ -19,7 +33,7 @@ export const settleOrderOnConfirm = async (orderId: number, confirmerUserId: num
     throw new WalletError(400, "userId 不合法");
   }
 
-  const result = await prisma.$transaction(async (tx) => {
+  const result = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
     const order = await tx.order.findUnique({
       where: { id: orderId },
       select: {
@@ -137,6 +151,48 @@ export const settleOrderOnConfirm = async (orderId: number, confirmerUserId: num
     });
 
     return { orderId, amount, earningId: earning.id };
+  });
+
+  return result;
+};
+
+export const recharge = async (userId: number, amountInput: string | number) => {
+  if (!Number.isFinite(userId) || userId <= 0) {
+    throw new WalletError(400, "userId 不合法");
+  }
+
+  const amount = toRequiredDecimal(amountInput);
+  if (!amount.gt(0)) {
+    throw new WalletError(400, "amount 必须大于 0");
+  }
+
+  const result = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+    const wallet = await tx.userWallet.upsert({
+      where: { user_id: userId },
+      create: { user_id: userId },
+      update: {},
+    });
+
+    const beforeTotal = wallet.balance.plus(wallet.frozen);
+    const afterTotal = beforeTotal.plus(amount);
+
+    const updatedWallet = await tx.userWallet.update({
+      where: { id: wallet.id },
+      data: { balance: { increment: amount } },
+    });
+
+    const log = await tx.walletLog.create({
+      data: {
+        wallet_id: wallet.id,
+        type: "RECHARGE",
+        amount,
+        ref_order_id: null,
+        before_balance: beforeTotal,
+        after_balance: afterTotal,
+      },
+    });
+
+    return { wallet: updatedWallet, log };
   });
 
   return result;

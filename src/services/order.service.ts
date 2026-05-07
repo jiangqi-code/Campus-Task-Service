@@ -2,6 +2,7 @@
 import { OrderStatus, Prisma, PrismaClient, TaskStatus } from "@prisma/client";
 import { type RedisClientType, createClient } from "redis";
 import { notificationService } from "./notification.service";
+import { creditService, isOnTimeDelivery } from "./credit.service";
 
 export const haversineDistanceKm = (
   lat1: number,
@@ -32,6 +33,36 @@ export class OrderError extends Error {
 }
 
 const prisma = new PrismaClient();
+
+type GetOrderListInput = {
+  userId: number;
+  role: string;
+  status?: unknown;
+  page?: unknown;
+  pageSize?: unknown;
+  sortBy?: unknown;
+  sortOrder?: unknown;
+};
+
+const parseIntOr = (value: unknown, fallback: number) => {
+  if (typeof value === "number" && Number.isFinite(value)) return Math.trunc(value);
+  if (typeof value === "string" && value.trim()) {
+    const n = Number.parseInt(value.trim(), 10);
+    if (Number.isFinite(n)) return n;
+  }
+  return fallback;
+};
+
+const isListableOrderStatus = (value: unknown): value is OrderStatus => {
+  if (typeof value !== "string") return false;
+  return (
+    value === OrderStatus.ACCEPTED ||
+    value === OrderStatus.PICKED ||
+    value === OrderStatus.DELIVERING ||
+    value === OrderStatus.COMPLETED ||
+    value === OrderStatus.CANCELLED
+  );
+};
 
 let redisClient: RedisClientType | null = null;
 let redisConnecting: Promise<RedisClientType> | null = null;
@@ -86,36 +117,55 @@ const transitionOrderStatus = async (orderId: number, userId: number, nextStatus
     throw new OrderError(400, "userId 不合法");
   }
 
-  const order = await prisma.order.findUnique({ where: { id: orderId } });
-  if (!order) {
-    throw new OrderError(404, "订单不存在");
-  }
-  if (order.taker_id !== userId) {
-    throw new OrderError(403, "无权限");
-  }
+  const result = await prisma.$transaction(async (tx) => {
+    const order = await tx.order.findUnique({ where: { id: orderId } });
+    if (!order) {
+      throw new OrderError(404, "订单不存在");
+    }
+    if (order.taker_id !== userId) {
+      throw new OrderError(403, "无权限");
+    }
 
-  const normalizeStatus = (value: unknown) => (typeof value === "string" ? value : String(value));
-  const allowedNext = allowedTransitions[order.status];
-  console.log("[transitionOrderStatus]", {
-    "order.status": order.status,
-    nextStatus,
-    allowedNext,
-  });
+    const normalizeStatus = (value: unknown) => (typeof value === "string" ? value : String(value));
+    const allowedNext = allowedTransitions[order.status];
+    console.log("[transitionOrderStatus]", {
+      "order.status": order.status,
+      nextStatus,
+      allowedNext,
+    });
 
-  if (!allowedNext || normalizeStatus(allowedNext) !== normalizeStatus(nextStatus)) {
-    throw new OrderError(409, "非法状态转换");
-  }
+    if (!allowedNext || normalizeStatus(allowedNext) !== normalizeStatus(nextStatus)) {
+      throw new OrderError(409, "非法状态转换");
+    }
 
-  const updated = await prisma.order.update({
-    where: { id: orderId },
-    data: toTransitionUpdate(nextStatus),
+    const updated = await tx.order.update({
+      where: { id: orderId },
+      data: toTransitionUpdate(nextStatus),
+    });
+
+    if (nextStatus === OrderStatus.COMPLETED) {
+      const completeTime = updated.complete_time ?? new Date();
+      const onTime = isOnTimeDelivery({
+        acceptTime: order.accept_time,
+        createdAt: order.created_at,
+        completeTime,
+        etaMinutes: order.eta_minutes,
+      });
+      await creditService.changeCreditScore({
+        tx,
+        userId,
+        delta: 2 + (onTime ? 1 : 0),
+      });
+    }
+
+    return { order, updated };
   });
 
   notificationService
-    .notifyOrderStatusChanged({ orderId: updated.id, fromStatus: order.status, toStatus: nextStatus })
+    .notifyOrderStatusChanged({ orderId: result.updated.id, fromStatus: result.order.status, toStatus: nextStatus })
     .catch(() => { });
 
-  return updated;
+  return result.updated;
 };
 
 export const acceptTask = async (taskId: number, userId: number) => {
@@ -177,6 +227,7 @@ export const acceptTask = async (taskId: number, userId: number) => {
       return Math.ceil(distanceKm * 2 + 10);
     })();
 
+    const acceptTime = new Date();
     const order = await prisma.$transaction(async (tx) => {
       const finalPrice = task.fee_total.plus(task.tip ?? new Prisma.Decimal(0));
 
@@ -199,6 +250,7 @@ export const acceptTask = async (taskId: number, userId: number) => {
           task_id: taskId,
           taker_id: userId,
           status: OrderStatus.ACCEPTED,
+          accept_time: acceptTime,
           final_price: finalPrice,
           eta_minutes: etaMinutes,
         },
@@ -232,6 +284,127 @@ export const deliverOrder = async (orderId: number, userId: number) => {
 
 export const completeOrder = async (orderId: number, userId: number) => {
   return transitionOrderStatus(orderId, userId, OrderStatus.COMPLETED);
+};
+
+const isRunner = (role: string) => role.trim().toUpperCase() === "RUNNER";
+const isAdmin = (role: string) => role.trim().toUpperCase() === "ADMIN";
+
+const selectOrderTrack = {
+  id: true,
+  order_id: true,
+  pickup_photo_url: true,
+  delivery_photo_url: true,
+  location_points_json: true,
+  created_at: true,
+  updated_at: true,
+} as const;
+
+export const uploadPickupPhoto = async (orderId: number, userId: number, photoUrl: string) => {
+  if (!Number.isFinite(orderId) || orderId <= 0) {
+    throw new OrderError(400, "orderId 不合法");
+  }
+  if (!Number.isFinite(userId) || userId <= 0) {
+    throw new OrderError(400, "userId 不合法");
+  }
+  if (typeof photoUrl !== "string" || !photoUrl.trim()) {
+    throw new OrderError(400, "photoUrl 不合法");
+  }
+
+  const order = await prisma.order.findUnique({
+    where: { id: orderId },
+    select: { id: true, status: true, taker_id: true },
+  });
+  if (!order) {
+    throw new OrderError(404, "订单不存在");
+  }
+  if (order.taker_id !== userId) {
+    throw new OrderError(403, "无权限");
+  }
+  if (
+    order.status !== OrderStatus.PICKED &&
+    order.status !== OrderStatus.DELIVERING &&
+    order.status !== OrderStatus.COMPLETED
+  ) {
+    throw new OrderError(409, "订单状态必须为 PICKED / DELIVERING / COMPLETED");
+  }
+
+  const track = await prisma.orderTrack.upsert({
+    where: { order_id: orderId },
+    update: { pickup_photo_url: photoUrl.trim() },
+    create: { order_id: orderId, pickup_photo_url: photoUrl.trim() },
+    select: selectOrderTrack,
+  });
+
+  return track;
+};
+
+export const uploadDeliveryPhoto = async (orderId: number, userId: number, photoUrl: string) => {
+  if (!Number.isFinite(orderId) || orderId <= 0) {
+    throw new OrderError(400, "orderId 不合法");
+  }
+  if (!Number.isFinite(userId) || userId <= 0) {
+    throw new OrderError(400, "userId 不合法");
+  }
+  if (typeof photoUrl !== "string" || !photoUrl.trim()) {
+    throw new OrderError(400, "photoUrl 不合法");
+  }
+
+  const order = await prisma.order.findUnique({
+    where: { id: orderId },
+    select: { id: true, status: true, taker_id: true },
+  });
+  if (!order) {
+    throw new OrderError(404, "订单不存在");
+  }
+  if (order.taker_id !== userId) {
+    throw new OrderError(403, "无权限");
+  }
+  if (order.status !== OrderStatus.DELIVERING && order.status !== OrderStatus.COMPLETED) {
+    throw new OrderError(409, "订单状态必须为 DELIVERING / COMPLETED");
+  }
+
+  const track = await prisma.orderTrack.upsert({
+    where: { order_id: orderId },
+    update: { delivery_photo_url: photoUrl.trim() },
+    create: { order_id: orderId, delivery_photo_url: photoUrl.trim() },
+    select: selectOrderTrack,
+  });
+
+  return track;
+};
+
+export const getOrderTrack = async (orderId: number, userId: number, role: string) => {
+  if (!Number.isFinite(orderId) || orderId <= 0) {
+    throw new OrderError(400, "orderId 不合法");
+  }
+  if (!Number.isFinite(userId) || userId <= 0) {
+    throw new OrderError(400, "userId 不合法");
+  }
+  const roleStr = typeof role === "string" ? role : String(role);
+
+  const order = await prisma.order.findUnique({
+    where: { id: orderId },
+    select: { id: true, taker_id: true, task: { select: { publisher_id: true } } },
+  });
+  if (!order) {
+    throw new OrderError(404, "订单不存在");
+  }
+
+  const allowed =
+    isAdmin(roleStr) ||
+    (isRunner(roleStr) ? order.taker_id === userId : order.task.publisher_id === userId);
+  if (!allowed) {
+    throw new OrderError(403, "无权限");
+  }
+
+  const track = await prisma.orderTrack.upsert({
+    where: { order_id: orderId },
+    update: {},
+    create: { order_id: orderId },
+    select: selectOrderTrack,
+  });
+
+  return track;
 };
 
 const roundMoney = (value: Prisma.Decimal) =>
@@ -381,6 +554,19 @@ export const cancelOrder = async (orderId: number, userId: number) => {
       data: { status: OrderStatus.CANCELLED },
     });
 
+    if (
+      isTaker &&
+      (order.status === OrderStatus.ACCEPTED ||
+        order.status === OrderStatus.PICKED ||
+        order.status === OrderStatus.DELIVERING)
+    ) {
+      await creditService.changeCreditScore({
+        tx,
+        userId,
+        delta: -10,
+      });
+    }
+
     return { order: nextOrder, refundAmount, platformAmount, takerAmount };
   });
 
@@ -465,9 +651,120 @@ export const urgeOrder = async (orderId: number, userId: number) => {
       }
     });
 
+    notificationService
+      .notifyOrderUrged({ orderId, publisherId: userId, takerId: order.taker_id, at: nowIso })
+      .catch(() => { });
+
     return { orderId, message: "催单成功" };
   } catch (err) {
     await redis.del(key).catch(() => { });
     throw err;
   }
+};
+
+export const getOrderList = async (input: GetOrderListInput) => {
+  if (!Number.isFinite(input.userId) || input.userId <= 0) {
+    throw new OrderError(400, "userId 不合法");
+  }
+
+  const role = typeof input.role === "string" ? input.role : String(input.role);
+
+  const page = Math.max(1, parseIntOr(input.page, 1));
+  const pageSize = Math.min(100, Math.max(1, parseIntOr(input.pageSize, 10)));
+  const skip = (page - 1) * pageSize;
+
+  const statusRaw = typeof input.status === "string" ? input.status.trim() : input.status;
+  const status = statusRaw ? String(statusRaw) : "";
+  if (status && !isListableOrderStatus(status)) {
+    throw new OrderError(400, "status 不合法");
+  }
+
+  const sortByRaw = typeof input.sortBy === "string" ? input.sortBy.trim() : "";
+  const sortBy = sortByRaw === "updated_at" ? "updated_at" : "created_at";
+
+  const sortOrderRaw = typeof input.sortOrder === "string" ? input.sortOrder.trim().toLowerCase() : "";
+  const sortOrder = sortOrderRaw === "asc" ? "asc" : "desc";
+
+  const where: Prisma.OrderWhereInput = {
+    ...(status ? { status: status as OrderStatus } : undefined),
+    ...(role === "USER"
+      ? { task: { publisher_id: input.userId } }
+      : role === "RUNNER"
+        ? { taker_id: input.userId }
+        : role === "ADMIN"
+          ? {}
+          : { task: { publisher_id: input.userId } }),
+  };
+
+  const orderBy = { [sortBy]: sortOrder } as Prisma.OrderOrderByWithRelationInput;
+
+  const [total, items] = await Promise.all([
+    prisma.order.count({ where }),
+    role === "USER"
+      ? prisma.order.findMany({
+        where,
+        orderBy,
+        skip,
+        take: pageSize,
+        select: {
+          id: true,
+          status: true,
+          created_at: true,
+          taker_id: true,
+          task: { select: { pickup_address: true, delivery_address: true, fee_total: true } },
+          taker: { select: { nickname: true } },
+        },
+      })
+      : role === "RUNNER"
+        ? prisma.order.findMany({
+          where,
+          orderBy,
+          skip,
+          take: pageSize,
+          select: {
+            id: true,
+            status: true,
+            created_at: true,
+            final_price: true,
+            task: { select: { pickup_address: true, delivery_address: true, fee_total: true } },
+          },
+        })
+        : prisma.order.findMany({
+          where,
+          orderBy,
+          skip,
+          take: pageSize,
+          select: {
+            id: true,
+            status: true,
+            created_at: true,
+            task: { select: { pickup_address: true, delivery_address: true, fee_total: true } },
+          },
+        }),
+  ]);
+
+  const mapped = (items as Array<any>).map((order) => {
+    const base = {
+      id: order.id,
+      status: order.status,
+      created_at: order.created_at,
+      pickup_address: order.task.pickup_address,
+      delivery_address: order.task.delivery_address,
+      fee_total: order.task.fee_total,
+    };
+
+    if (role === "RUNNER") {
+      return { ...base, final_price: order.final_price ?? null };
+    }
+    if (role === "USER") {
+      return {
+        ...base,
+        taker_id: order.taker_id ?? null,
+        taker_nickname: order.taker?.nickname ?? null,
+      };
+    }
+    return base;
+  });
+
+  return { page, pageSize, total, items: mapped };
 };

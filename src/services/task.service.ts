@@ -25,8 +25,13 @@ type PublishTaskInput = {
   urgency?: number | null;
   remark?: string | null;
   images_json?: unknown;
+  weight?: string | null;
+  size?: string | null;
+  is_fragile?: boolean | null;
+  need_inspection?: boolean | null;
   fee_total: string | number;
   tip?: string | number | null;
+  scheduled_time?: string | number | Date | null;
 };
 
 type ListTaskInput = {
@@ -59,6 +64,22 @@ const parseIntOr = (value: unknown, fallback: number) => {
     if (Number.isFinite(n)) return n;
   }
   return fallback;
+};
+
+const toOptionalDateTime = (value: unknown) => {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (value instanceof Date) {
+    return Number.isFinite(value.getTime()) ? value : undefined;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const d = new Date(value);
+    return Number.isFinite(d.getTime()) ? d : undefined;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const d = new Date(value.trim());
+    return Number.isFinite(d.getTime()) ? d : undefined;
+  }
+  return undefined;
 };
 
 export class TaskService {
@@ -188,6 +209,16 @@ export class TaskService {
 
     const urgency = input.urgency ?? 0;
     const remark = input.remark ?? null;
+    const weight = typeof input.weight === "string" ? input.weight.trim() : "";
+    const size = typeof input.size === "string" ? input.size.trim() : "";
+    const is_fragile = typeof input.is_fragile === "boolean" ? input.is_fragile : false;
+    const need_inspection =
+      typeof input.need_inspection === "boolean" ? input.need_inspection : false;
+
+    const scheduled_time = toOptionalDateTime(input.scheduled_time);
+    if (input.scheduled_time !== undefined && input.scheduled_time !== null && !scheduled_time) {
+      throw new TaskError(400, "scheduled_time 不合法");
+    }
 
     const task = await prisma.task.create({
       data: {
@@ -202,9 +233,14 @@ export class TaskService {
         urgency: typeof urgency === "number" && Number.isFinite(urgency) ? urgency : 0,
         remark,
         images_json: input.images_json as Prisma.InputJsonValue | undefined,
+        weight: weight || null,
+        size: size || null,
+        is_fragile,
+        need_inspection,
         fee_total,
         tip,
-        status: TaskStatus.PENDING,
+        scheduled_time,
+        status: scheduled_time ? TaskStatus.SCHEDULED : TaskStatus.PENDING,
       },
     });
 

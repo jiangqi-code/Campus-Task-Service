@@ -1,4 +1,6 @@
 import { OrderStatus, Prisma, PrismaClient } from "@prisma/client";
+import { creditService, getCreditDeltaByReviewRating } from "./credit.service";
+import { sensitiveWordService } from "./sensitiveWord.service";
 
 export class ReviewError extends Error {
   public readonly status: number;
@@ -49,38 +51,58 @@ export class ReviewService {
     const comment =
       input.comment === undefined || input.comment === null ? null : String(input.comment).trim() || null;
 
-    const order = await prisma.order.findUnique({
-      where: { id: orderId },
-      select: {
-        id: true,
-        status: true,
-        task: { select: { publisher_id: true } },
-        review: { select: { id: true } },
-      },
-    });
-    if (!order) {
-      throw new ReviewError(404, "订单不存在");
-    }
-    if (order.task.publisher_id !== reviewerUserId) {
-      throw new ReviewError(403, "无权限");
-    }
-    if (order.status !== OrderStatus.COMPLETED) {
-      throw new ReviewError(409, "订单状态必须为 COMPLETED");
-    }
-    if (order.review) {
-      throw new ReviewError(409, "订单已评价");
+    if (comment) {
+      const match = await sensitiveWordService.matchText(comment);
+      if (match.matched) {
+        throw new ReviewError(400, "评价内容包含敏感词");
+      }
     }
 
-    const created = await prisma.orderReview.create({
-      data: {
-        order_id: orderId,
-        rating,
-        tags_json: tags as Prisma.InputJsonValue,
-        comment,
-      },
+    const created = await prisma.$transaction(async (tx) => {
+      const order = await tx.order.findUnique({
+        where: { id: orderId },
+        select: {
+          id: true,
+          status: true,
+          taker_id: true,
+          task: { select: { publisher_id: true } },
+          review: { select: { id: true } },
+        },
+      });
+      if (!order) {
+        throw new ReviewError(404, "订单不存在");
+      }
+      if (order.task.publisher_id !== reviewerUserId) {
+        throw new ReviewError(403, "无权限");
+      }
+      if (order.status !== OrderStatus.COMPLETED) {
+        throw new ReviewError(409, "订单状态必须为 COMPLETED");
+      }
+      if (order.review) {
+        throw new ReviewError(409, "订单已评价");
+      }
+
+      const created = await tx.orderReview.create({
+        data: {
+          order_id: orderId,
+          rating,
+          tags_json: tags as Prisma.InputJsonValue,
+          comment,
+        },
+      });
+
+      const takerId = order.taker_id;
+      if (takerId) {
+        await creditService.changeCreditScore({
+          tx,
+          userId: takerId,
+          delta: getCreditDeltaByReviewRating(rating),
+        });
+      }
+
+      return created;
     });
 
     return created;
   }
 }
-

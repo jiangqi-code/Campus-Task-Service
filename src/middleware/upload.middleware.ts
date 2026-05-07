@@ -61,7 +61,7 @@ const avatarUpload = multer({
   storage: multer.memoryStorage(),
   fileFilter,
   limits: {
-    fileSize: 5 * 1024 * 1024,
+    fileSize: 2 * 1024 * 1024,
     files: 1,
   },
 });
@@ -70,6 +70,7 @@ export const uploadImage: RequestHandler = (req, res, next) => {
   imageUpload.fields([
     { name: "image", maxCount: 1 },
     { name: "images", maxCount: 3 },
+    { name: "photo", maxCount: 1 },
   ])(req, res, (err: unknown) => {
     if (!err) {
       next();

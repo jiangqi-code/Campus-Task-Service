@@ -1,5 +1,6 @@
 import type { RequestHandler } from "express";
 import { TaskError, TaskService } from "../services/task.service";
+import { sensitiveWordService } from "../services/sensitiveWord.service";
 
 const taskService = new TaskService();
 
@@ -22,9 +23,19 @@ export const publish: RequestHandler = async (req, res, next) => {
       urgency,
       remark,
       images_json,
+      weight,
+      size,
+      is_fragile,
+      need_inspection,
       fee_total,
       tip,
+      scheduled_time,
     } = req.body as Partial<Record<string, unknown>>;
+
+    const remarkMatch = await sensitiveWordService.matchText(remark);
+    if (remarkMatch.matched) {
+      throw new TaskError(400, "任务备注包含敏感词");
+    }
 
     const task = await taskService.publish({
       publisherId: user.id,
@@ -38,8 +49,27 @@ export const publish: RequestHandler = async (req, res, next) => {
       urgency: urgency as number | null | undefined,
       remark: (remark === undefined ? null : (remark as string | null)) ?? null,
       images_json,
+      weight: weight === undefined ? null : String(weight),
+      size: size === undefined ? null : String(size),
+      is_fragile:
+        typeof is_fragile === "boolean"
+          ? is_fragile
+          : typeof is_fragile === "number"
+            ? is_fragile === 1
+            : typeof is_fragile === "string"
+              ? ["1", "true", "yes", "on"].includes(is_fragile.trim().toLowerCase())
+              : null,
+      need_inspection:
+        typeof need_inspection === "boolean"
+          ? need_inspection
+          : typeof need_inspection === "number"
+            ? need_inspection === 1
+            : typeof need_inspection === "string"
+              ? ["1", "true", "yes", "on"].includes(need_inspection.trim().toLowerCase())
+              : null,
       fee_total: fee_total as string | number,
       tip: tip as string | number | null | undefined,
+      scheduled_time: scheduled_time as string | number | Date | null | undefined,
     });
 
     res.status(201).json({ task });

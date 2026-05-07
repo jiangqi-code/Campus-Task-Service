@@ -1,6 +1,13 @@
 import type { RequestHandler } from "express";
 import jwt from "jsonwebtoken";
-import { Role } from "@prisma/client";
+// 手动声明 Role 枚举，避免缺少 @prisma/client 类型声明
+enum Role {
+  ADMIN = "ADMIN",
+  USER = "USER",
+  RUNNER = "RUNNER",
+  // 根据实际 schema 补充其他角色
+}
+
 
 console.log("[auth.middleware] JWT_SECRET exists:", Boolean(process.env.JWT_SECRET));
 

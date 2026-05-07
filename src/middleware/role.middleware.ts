@@ -1,5 +1,11 @@
 import type { RequestHandler } from "express";
-import { Role } from "@prisma/client";
+// 手动声明 Role 枚举，避免 @prisma/client 类型缺失
+enum Role {
+  ADMIN = "ADMIN",
+  USER = "USER",
+  RUNNER = "RUNNER",
+  // 根据实际业务补充其他角色
+}
 
 const toRole = (value: unknown): Role | null => {
   if (typeof value !== "string") return null;
