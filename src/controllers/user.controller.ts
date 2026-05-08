@@ -149,9 +149,13 @@ export const updateProfile: RequestHandler = async (req, res, next) => {
       return;
     }
 
-    const normalizedNickname = nickname === undefined ? undefined : (nickname.trim() ? nickname.trim() : null);
-    const normalizedPhone = phone === undefined ? undefined : (phone.trim() ? phone.trim() : null);
-    const normalizedAvatar = avatar === undefined ? undefined : (avatar.trim() ? avatar.trim() : null);
+    const trimmedNickname = typeof nickname === "string" ? (nickname ? nickname.trim() : "") : "";
+    const trimmedPhone = typeof phone === "string" ? (phone ? phone.trim() : "") : "";
+    const trimmedAvatar = typeof avatar === "string" ? (avatar ? avatar.trim() : "") : "";
+
+    const normalizedNickname = nickname === undefined ? undefined : (trimmedNickname ? trimmedNickname : null);
+    const normalizedPhone = phone === undefined ? undefined : (trimmedPhone ? trimmedPhone : null);
+    const normalizedAvatar = avatar === undefined ? undefined : (trimmedAvatar ? trimmedAvatar : null);
 
     const updated = await updateProfileService({
       userId: user.id,

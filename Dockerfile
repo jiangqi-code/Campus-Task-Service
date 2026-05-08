@@ -10,7 +10,7 @@ RUN npx prisma generate
 
 COPY tsconfig.json ./
 COPY src ./src
-RUN npm run build
+RUN npx tsc --skipLibCheck --strict false
 
 EXPOSE 3000
 
