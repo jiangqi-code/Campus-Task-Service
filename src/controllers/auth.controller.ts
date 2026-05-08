@@ -39,6 +39,8 @@ export const login: RequestHandler = async (req, res, next) => {
     const result = await authService.login({
       account: account ?? "",
       password: password ?? "",
+      ip: req.ip,
+      userAgent: req.get("user-agent") ?? "",
     });
 
     res.status(200).json(result);

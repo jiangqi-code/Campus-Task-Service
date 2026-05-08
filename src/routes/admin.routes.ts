@@ -2,7 +2,9 @@ import { Router } from "express";
 import { requireAuth } from "../middleware/auth.middleware";
 import { requireRole } from "../middleware/role.middleware";
 import { auditAuth, getAuthList } from "../controllers/auth.controller";
+import { getComplaintList, processComplaint } from "../controllers/complaint.controller";
 import { auditRefund, getRefundList } from "../controllers/refund.controller";
+import { getReportList } from "../controllers/report.controller";
 import {
   addSensitiveWord,
   auditWithdraw,
@@ -13,9 +15,14 @@ import {
   freezeUser,
   getConfig,
   getDashboard,
+  getHeatmapData,
+  getErrorLogs,
+  getLoginLogs,
   getLogs,
   getSensitiveWords,
+  exportOrders,
   orderList,
+  resetPassword,
   setOrderStatus,
   taskList,
   updateConfig,
@@ -26,7 +33,10 @@ import {
 const router = Router();
 
 router.get("/dashboard", requireAuth, requireRole("ADMIN"), getDashboard);
+router.get("/heatmap", requireAuth, requireRole("ADMIN"), getHeatmapData);
 router.get("/logs", requireAuth, requireRole("ADMIN"), getLogs);
+router.get("/logs/login", requireAuth, requireRole("ADMIN"), getLoginLogs);
+router.get("/logs/error", requireAuth, requireRole("ADMIN"), getErrorLogs);
 router.get("/config", requireAuth, requireRole("ADMIN"), getConfig);
 router.put("/config/:key", requireAuth, requireRole("ADMIN"), updateConfig);
 router.get("/sensitive-words", requireAuth, requireRole("ADMIN"), getSensitiveWords);
@@ -34,11 +44,13 @@ router.post("/sensitive-words", requireAuth, requireRole("ADMIN"), addSensitiveW
 router.delete("/sensitive-words/:id", requireAuth, requireRole("ADMIN"), deleteSensitiveWord);
 router.get("/users", requireAuth, requireRole("ADMIN"), userList);
 router.put("/users/:userId/freeze", requireAuth, requireRole("ADMIN"), freezeUser);
+router.put("/users/:userId/reset-password", requireAuth, requireRole("ADMIN"), resetPassword);
 router.delete("/users/:userId", requireAuth, requireRole("ADMIN"), deleteUser);
 
 router.get("/tasks", requireAuth, requireRole("ADMIN"), taskList);
 router.delete("/tasks/:taskId", requireAuth, requireRole("ADMIN"), deleteTask);
 
+router.get("/orders/export", requireAuth, requireRole("ADMIN"), exportOrders);
 router.get("/orders", requireAuth, requireRole("ADMIN"), orderList);
 router.put("/order/:orderId/cancel", requireAuth, requireRole("ADMIN"), cancelOrder);
 router.put("/order/:orderId/status", requireAuth, requireRole("ADMIN"), setOrderStatus);
@@ -51,5 +63,10 @@ router.post("/refund/:refundId/audit", requireAuth, requireRole("ADMIN"), auditR
 
 router.get("/auth/list", requireAuth, requireRole("ADMIN"), getAuthList);
 router.post("/auth/:authId/audit", requireAuth, requireRole("ADMIN"), auditAuth);
+
+router.get("/reports", requireAuth, requireRole("ADMIN"), getReportList);
+
+router.get("/complaints", requireAuth, requireRole("ADMIN"), getComplaintList);
+router.put("/complaints/:complaintId/process", requireAuth, requireRole("ADMIN"), processComplaint);
 
 export default router;

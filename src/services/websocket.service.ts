@@ -202,6 +202,28 @@ export class WebsocketService {
     return io;
   }
 
+  pushToUser(userId: number, event: string, payload: unknown) {
+    if (!Number.isFinite(userId) || userId <= 0) {
+      throw new Error("Invalid userId");
+    }
+    if (typeof event !== "string" || !event.trim()) {
+      throw new Error("Invalid event");
+    }
+    const io = this.getIO();
+    io.to(`user:${Math.trunc(userId)}`).emit(event.trim(), payload);
+  }
+
+  pushToOrder(orderId: number, event: string, payload: unknown) {
+    if (!Number.isFinite(orderId) || orderId <= 0) {
+      throw new Error("Invalid orderId");
+    }
+    if (typeof event !== "string" || !event.trim()) {
+      throw new Error("Invalid event");
+    }
+    const io = this.getIO();
+    io.to(`order:${Math.trunc(orderId)}`).emit(event.trim(), payload);
+  }
+
   getIO() {
     if (!this.io) {
       throw new Error("WebSocket service not started");

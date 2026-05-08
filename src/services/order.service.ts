@@ -177,6 +177,9 @@ export const acceptTask = async (taskId: number, userId: number) => {
   }
 
   const redis = await getRedisClient();
+  try {
+    await redis.incr(`stat:runner:grab_attempts:${userId}`);
+  } catch { }
   const lockKey = `lock:task:${taskId}`;
 
   const locked = await redis.setNX(lockKey, "1");

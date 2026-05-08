@@ -1,7 +1,9 @@
-import { OrderStatus, Prisma, PrismaClient, Role, TaskStatus } from "@prisma/client";
+import { ComplaintStatus, OrderStatus, Prisma, PrismaClient, Role, TaskStatus } from "@prisma/client";
 import { WithdrawStatus } from "./withdraw.service";
 import { notificationService } from "./notification.service";
 import { sensitiveWordService } from "./sensitiveWord.service";
+import { creditService } from "./credit.service";
+import bcrypt from "bcryptjs";
 
 export class AdminError extends Error {
   public readonly status: number;
@@ -79,6 +81,18 @@ type DeleteUserInput = {
   userId: number;
 };
 
+type ResetPasswordInput = {
+  adminId: number;
+  userId: number;
+};
+
+type ProcessComplaintInput = {
+  adminId: number;
+  complaintId: number;
+  action: unknown;
+  admin_note?: unknown;
+};
+
 type OrderListInput = {
   adminId: number;
   page?: unknown;
@@ -110,6 +124,33 @@ type AdminLogListInput = {
   adminId?: unknown;
   action?: unknown;
   targetType?: unknown;
+  startDate?: unknown;
+  endDate?: unknown;
+};
+
+type LoginLogListInput = {
+  page?: unknown;
+  pageSize?: unknown;
+  userId?: unknown;
+  keyword?: unknown;
+  ip?: unknown;
+  startDate?: unknown;
+  endDate?: unknown;
+};
+
+type ErrorLogListInput = {
+  page?: unknown;
+  pageSize?: unknown;
+  userId?: unknown;
+  keyword?: unknown;
+  url?: unknown;
+  method?: unknown;
+  ip?: unknown;
+  startDate?: unknown;
+  endDate?: unknown;
+};
+
+type HeatmapInput = {
   startDate?: unknown;
   endDate?: unknown;
 };
@@ -232,6 +273,29 @@ const toAdminLogDetail = (value: unknown): Prisma.InputJsonValue | undefined => 
   if (value === undefined) return undefined;
   if (value === null) return null;
   return value as Prisma.InputJsonValue;
+};
+
+type ComplaintProcessAction = "resolve" | "reject";
+
+const toComplaintProcessAction = (value: unknown): ComplaintProcessAction | null => {
+  if (typeof value !== "string") return null;
+  const v = value.trim().toLowerCase();
+  if (v === "resolve" || v === "reject") return v;
+  return null;
+};
+
+const toOptionalText = (value: unknown): string | undefined => {
+  if (typeof value !== "string") return undefined;
+  const v = value.trim();
+  return v ? v : undefined;
+};
+
+const roundMoney = (value: Prisma.Decimal) => value.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+
+const isSevereComplaint = (reason: string) => {
+  const v = reason.trim();
+  if (!v) return false;
+  return /严重|重大|恶劣|serious|severe/i.test(v);
 };
 
 const sensitiveWordsConfigKey = "sensitive_words";
@@ -397,6 +461,80 @@ export class AdminService {
     };
   }
 
+  async getHeatmapData(input: HeatmapInput) {
+    const startDate = toOptionalStartDate(input.startDate);
+    if (hasQueryValue(input.startDate) && !startDate) {
+      throw new AdminError(400, "start_date 不合法");
+    }
+
+    const endDate = toOptionalEndDate(input.endDate);
+    if (hasQueryValue(input.endDate) && !endDate) {
+      throw new AdminError(400, "end_date 不合法");
+    }
+
+    if (startDate && endDate && startDate.getTime() > endDate.getTime()) {
+      throw new AdminError(400, "start_date 不能大于 end_date");
+    }
+
+    const where: Prisma.OrderWhereInput = {
+      task: { pickup_lat: { not: null }, pickup_lng: { not: null } },
+      ...((startDate || endDate) && {
+        created_at: {
+          ...(startDate ? { gte: startDate } : undefined),
+          ...(endDate ? { lte: endDate } : undefined),
+        },
+      }),
+    };
+
+    const grouped = await prisma.order.groupBy({
+      by: ["task_id"],
+      where,
+      _count: { _all: true },
+    });
+
+    if (!grouped.length) return [];
+
+    const taskIds = grouped.map((r) => r.task_id);
+
+    const tasks = await prisma.task.findMany({
+      where: { id: { in: taskIds } },
+      select: { id: true, pickup_lat: true, pickup_lng: true },
+    });
+
+    const taskIdToCoords = new Map<number, { lat: Prisma.Decimal; lng: Prisma.Decimal }>();
+    for (const t of tasks) {
+      if (!t.pickup_lat || !t.pickup_lng) continue;
+      taskIdToCoords.set(t.id, { lat: t.pickup_lat, lng: t.pickup_lng });
+    }
+
+    const agg = new Map<string, { lat: number; lng: number; count: number }>();
+    for (const row of grouped) {
+      const coords = taskIdToCoords.get(row.task_id);
+      if (!coords) continue;
+
+      const count = row._count._all ?? 0;
+      if (!count) continue;
+
+      const latStr = coords.lat.toFixed(6);
+      const lngStr = coords.lng.toFixed(6);
+      const key = `${latStr},${lngStr}`;
+
+      const existing = agg.get(key);
+      if (existing) {
+        existing.count += count;
+        continue;
+      }
+
+      agg.set(key, {
+        lat: Number(latStr),
+        lng: Number(lngStr),
+        count,
+      });
+    }
+
+    return Array.from(agg.values());
+  }
+
   async getLogs(input: AdminLogListInput) {
     const page = Math.max(1, parseIntOr(input.page, 1));
     const pageSize = Math.min(100, Math.max(1, parseIntOr(input.pageSize, 10)));
@@ -469,6 +607,190 @@ export class AdminService {
       target_type: row.target_type,
       target_id: row.target_id,
       detail_json: row.detail_json,
+      created_at: row.created_at,
+    }));
+
+    return { page, pageSize, total, items };
+  }
+
+  async getLoginLogs(input: LoginLogListInput) {
+    const page = Math.max(1, parseIntOr(input.page, 1));
+    const pageSize = Math.min(100, Math.max(1, parseIntOr(input.pageSize, 10)));
+    const skip = (page - 1) * pageSize;
+
+    const userId = toOptionalPositiveInt(input.userId);
+    if (hasQueryValue(input.userId) && !userId) {
+      throw new AdminError(400, "user_id 不合法");
+    }
+
+    const keyword = toOptionalTrimmedString(input.keyword);
+    if (hasQueryValue(input.keyword) && !keyword) {
+      throw new AdminError(400, "keyword 不合法");
+    }
+
+    const ip = toOptionalTrimmedString(input.ip);
+    if (hasQueryValue(input.ip) && !ip) {
+      throw new AdminError(400, "ip 不合法");
+    }
+
+    const startDate = toOptionalStartDate(input.startDate);
+    if (hasQueryValue(input.startDate) && !startDate) {
+      throw new AdminError(400, "start_date 不合法");
+    }
+
+    const endDate = toOptionalEndDate(input.endDate);
+    if (hasQueryValue(input.endDate) && !endDate) {
+      throw new AdminError(400, "end_date 不合法");
+    }
+
+    if (startDate && endDate && startDate.getTime() > endDate.getTime()) {
+      throw new AdminError(400, "start_date 不能大于 end_date");
+    }
+
+    const where: Prisma.LoginLogWhereInput = {
+      ...(userId ? { user_id: userId } : undefined),
+      ...(ip ? { ip: { contains: ip } } : undefined),
+      ...(keyword
+        ? {
+            user: {
+              OR: [
+                { student_id: { contains: keyword } },
+                { phone: { contains: keyword } },
+                { nickname: { contains: keyword } },
+              ],
+            },
+          }
+        : undefined),
+      ...((startDate || endDate) && {
+        login_time: {
+          ...(startDate ? { gte: startDate } : undefined),
+          ...(endDate ? { lte: endDate } : undefined),
+        },
+      }),
+    };
+
+    const [total, rows] = await Promise.all([
+      prisma.loginLog.count({ where }),
+      prisma.loginLog.findMany({
+        where,
+        orderBy: { login_time: "desc" },
+        skip,
+        take: pageSize,
+        select: {
+          id: true,
+          user_id: true,
+          login_time: true,
+          ip: true,
+          user_agent: true,
+          user: { select: { nickname: true, student_id: true, phone: true, role: true } },
+        },
+      }),
+    ]);
+
+    const items = rows.map((row: any) => ({
+      id: row.id,
+      user_id: row.user_id,
+      user_name: row.user.nickname ?? row.user.student_id ?? row.user.phone ?? "",
+      role: row.user.role,
+      login_time: row.login_time,
+      ip: row.ip,
+      user_agent: row.user_agent,
+    }));
+
+    return { page, pageSize, total, items };
+  }
+
+  async getErrorLogs(input: ErrorLogListInput) {
+    const page = Math.max(1, parseIntOr(input.page, 1));
+    const pageSize = Math.min(100, Math.max(1, parseIntOr(input.pageSize, 10)));
+    const skip = (page - 1) * pageSize;
+
+    const userId = toOptionalPositiveInt(input.userId);
+    if (hasQueryValue(input.userId) && !userId) {
+      throw new AdminError(400, "user_id 不合法");
+    }
+
+    const keyword = toOptionalTrimmedString(input.keyword);
+    if (hasQueryValue(input.keyword) && !keyword) {
+      throw new AdminError(400, "keyword 不合法");
+    }
+
+    const url = toOptionalTrimmedString(input.url);
+    if (hasQueryValue(input.url) && !url) {
+      throw new AdminError(400, "url 不合法");
+    }
+
+    const methodRaw = toOptionalTrimmedString(input.method);
+    if (hasQueryValue(input.method) && !methodRaw) {
+      throw new AdminError(400, "method 不合法");
+    }
+    const method = methodRaw ? methodRaw.trim().toUpperCase() : null;
+
+    const ip = toOptionalTrimmedString(input.ip);
+    if (hasQueryValue(input.ip) && !ip) {
+      throw new AdminError(400, "ip 不合法");
+    }
+
+    const startDate = toOptionalStartDate(input.startDate);
+    if (hasQueryValue(input.startDate) && !startDate) {
+      throw new AdminError(400, "start_date 不合法");
+    }
+
+    const endDate = toOptionalEndDate(input.endDate);
+    if (hasQueryValue(input.endDate) && !endDate) {
+      throw new AdminError(400, "end_date 不合法");
+    }
+
+    if (startDate && endDate && startDate.getTime() > endDate.getTime()) {
+      throw new AdminError(400, "start_date 不能大于 end_date");
+    }
+
+    const where: Prisma.ErrorLogWhereInput = {
+      ...(userId ? { user_id: userId } : undefined),
+      ...(ip ? { ip: { contains: ip } } : undefined),
+      ...(url ? { url: { contains: url } } : undefined),
+      ...(method ? { method } : undefined),
+      ...(keyword
+        ? {
+            OR: [{ error_message: { contains: keyword } }, { stack: { contains: keyword } }],
+          }
+        : undefined),
+      ...((startDate || endDate) && {
+        created_at: {
+          ...(startDate ? { gte: startDate } : undefined),
+          ...(endDate ? { lte: endDate } : undefined),
+        },
+      }),
+    };
+
+    const [total, rows] = await Promise.all([
+      prisma.errorLog.count({ where }),
+      prisma.errorLog.findMany({
+        where,
+        orderBy: { created_at: "desc" },
+        skip,
+        take: pageSize,
+        select: {
+          id: true,
+          error_message: true,
+          stack: true,
+          url: true,
+          method: true,
+          ip: true,
+          user_id: true,
+          created_at: true,
+        },
+      }),
+    ]);
+
+    const items = rows.map((row) => ({
+      id: row.id,
+      error_message: row.error_message,
+      stack: row.stack,
+      url: row.url,
+      method: row.method,
+      ip: row.ip,
+      user_id: row.user_id,
       created_at: row.created_at,
     }));
 
@@ -628,6 +950,54 @@ export class AdminService {
       });
 
       return { userId: input.userId, deleted: true };
+    });
+
+    return result;
+  }
+
+  async resetPassword(input: ResetPasswordInput) {
+    if (!Number.isFinite(input.adminId) || input.adminId <= 0) {
+      throw new AdminError(400, "adminId 不合法");
+    }
+    if (!Number.isFinite(input.userId) || input.userId <= 0) {
+      throw new AdminError(400, "userId 不合法");
+    }
+
+    const now = new Date();
+    const defaultPassword = "123456";
+    const passwordHash = await bcrypt.hash(defaultPassword, 10);
+
+    const result = await prisma.$transaction(async (tx) => {
+      const user = await tx.user.findUnique({
+        where: { id: input.userId },
+        select: { id: true, status: true },
+      });
+      if (!user) {
+        throw new AdminError(404, "用户不存在");
+      }
+      if (user.status === -1) {
+        throw new AdminError(409, "用户已删除");
+      }
+
+      await tx.user.update({
+        where: { id: input.userId },
+        data: { password_hash: passwordHash },
+      });
+
+      await tx.adminLog.create({
+        data: {
+          admin_id: input.adminId,
+          action: "USER_RESET_PASSWORD",
+          target_type: "USER",
+          target_id: input.userId,
+          detail_json: toAdminLogDetail({
+            at: now.toISOString(),
+            to_default: true,
+          }),
+        },
+      });
+
+      return { userId: input.userId, reset: true };
     });
 
     return result;
@@ -1495,5 +1865,183 @@ export class AdminService {
     });
 
     return { config: result };
+  }
+
+  async processComplaint(input: ProcessComplaintInput) {
+    if (!Number.isFinite(input.adminId) || input.adminId <= 0) {
+      throw new AdminError(400, "adminId 不合法");
+    }
+    if (!Number.isFinite(input.complaintId) || input.complaintId <= 0) {
+      throw new AdminError(400, "complaintId 不合法");
+    }
+
+    const action = toComplaintProcessAction(input.action);
+    if (!action) {
+      throw new AdminError(400, "action 必须为 resolve/reject");
+    }
+
+    const admin_note = toOptionalText(input.admin_note);
+    const now = new Date();
+
+    let notifyRunnerId: number | null = null;
+    let notifyOrderId: number | null = null;
+    let notifyComplaintId: number | null = null;
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const complaint = await tx.complaint.findUnique({
+        where: { id: input.complaintId },
+        select: {
+          id: true,
+          order_id: true,
+          creator_id: true,
+          reason: true,
+          status: true,
+          order: {
+            select: {
+              id: true,
+              taker_id: true,
+              final_price: true,
+              task: { select: { publisher_id: true, fee_total: true, tip: true } },
+            },
+          },
+        },
+      });
+      if (!complaint) {
+        throw new AdminError(404, "投诉工单不存在");
+      }
+      if (complaint.status === ComplaintStatus.RESOLVED || complaint.status === ComplaintStatus.REJECTED) {
+        throw new AdminError(409, "投诉工单已处理");
+      }
+
+      const to_status = action === "resolve" ? ComplaintStatus.RESOLVED : ComplaintStatus.REJECTED;
+
+      const next = await tx.complaint.update({
+        where: { id: complaint.id },
+        data: {
+          status: to_status,
+          admin_note,
+          admin_id: input.adminId,
+          processed_at: now,
+        },
+      });
+
+      await tx.adminLog.create({
+        data: {
+          admin_id: input.adminId,
+          action: "COMPLAINT_PROCESS",
+          target_type: "COMPLAINT",
+          target_id: complaint.id,
+          detail_json: toAdminLogDetail({
+            action,
+            to_status,
+            order_id: complaint.order_id,
+            creator_id: complaint.creator_id,
+            admin_note: admin_note ?? null,
+            at: now.toISOString(),
+          }),
+        },
+      });
+
+      if (to_status !== ComplaintStatus.RESOLVED) {
+        return next;
+      }
+
+      const runnerId = complaint.order.taker_id;
+      if (typeof runnerId !== "number") {
+        throw new AdminError(409, "订单未指定跑腿员");
+      }
+
+      if (complaint.creator_id === runnerId) {
+        return next;
+      }
+
+      const severe = isSevereComplaint(complaint.reason);
+      const creditDelta = severe ? -10 : -5;
+
+      await creditService.changeCreditScore({
+        tx,
+        userId: runnerId,
+        delta: creditDelta,
+      });
+
+      const computedOrderAmount = complaint.order.final_price
+        ? new Prisma.Decimal(complaint.order.final_price)
+        : complaint.order.task.fee_total.plus(complaint.order.task.tip ?? new Prisma.Decimal(0));
+
+      const rate = severe ? new Prisma.Decimal("0.5") : new Prisma.Decimal("0.2");
+      const compensationAmount = roundMoney(computedOrderAmount.mul(rate));
+
+      if (compensationAmount.gt(0)) {
+        const runnerWallet = await tx.userWallet.upsert({
+          where: { user_id: runnerId },
+          create: { user_id: runnerId },
+          update: {},
+        });
+
+        const receiverWallet = await tx.userWallet.upsert({
+          where: { user_id: complaint.creator_id },
+          create: { user_id: complaint.creator_id },
+          update: {},
+        });
+
+        const runnerBeforeTotal = runnerWallet.balance.plus(runnerWallet.frozen);
+        const runnerAfterTotal = runnerBeforeTotal.minus(compensationAmount);
+        const receiverBeforeTotal = receiverWallet.balance.plus(receiverWallet.frozen);
+        const receiverAfterTotal = receiverBeforeTotal.plus(compensationAmount);
+
+        const deducted = await tx.userWallet.updateMany({
+          where: { id: runnerWallet.id, balance: { gte: compensationAmount } },
+          data: { balance: { decrement: compensationAmount } },
+        });
+        if (deducted.count !== 1) {
+          throw new AdminError(409, "跑腿员余额不足，无法赔偿");
+        }
+
+        await tx.userWallet.update({
+          where: { id: receiverWallet.id },
+          data: { balance: { increment: compensationAmount } },
+        });
+
+        await tx.walletLog.createMany({
+          data: [
+            {
+              wallet_id: runnerWallet.id,
+              type: "COMPLAINT_COMPENSATION_OUT",
+              amount: compensationAmount,
+              ref_order_id: complaint.order_id,
+              before_balance: runnerBeforeTotal,
+              after_balance: runnerAfterTotal,
+            },
+            {
+              wallet_id: receiverWallet.id,
+              type: "COMPLAINT_COMPENSATION_IN",
+              amount: compensationAmount,
+              ref_order_id: complaint.order_id,
+              before_balance: receiverBeforeTotal,
+              after_balance: receiverAfterTotal,
+            },
+          ],
+        });
+      }
+
+      notifyRunnerId = runnerId;
+      notifyOrderId = complaint.order_id;
+      notifyComplaintId = complaint.id;
+
+      return next;
+    });
+
+    if (notifyRunnerId && notifyOrderId && notifyComplaintId) {
+      notificationService
+        .notifyComplaintProcessed({
+          runnerId: notifyRunnerId,
+          orderId: notifyOrderId,
+          complaintId: notifyComplaintId,
+          message: "您有一条投诉已处理",
+        })
+        .catch(() => {});
+    }
+
+    return updated;
   }
 }

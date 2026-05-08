@@ -16,6 +16,14 @@ type NotifyOrderUrgedInput = {
   at?: string;
 };
 
+type NotifyComplaintProcessedInput = {
+  runnerId: number;
+  complaintId: number;
+  orderId: number;
+  message?: string;
+  at?: string;
+};
+
 export class NotificationService {
   async notifyOrderStatusChanged(input: NotifyOrderStatusChangedInput) {
     if (!Number.isFinite(input.orderId) || input.orderId <= 0) return;
@@ -90,6 +98,23 @@ export class NotificationService {
 
     const io = websocketService.getIO();
     io.to(`user:${finalTakerId}`).emit("order:urge", payload);
+  }
+
+  async notifyComplaintProcessed(input: NotifyComplaintProcessedInput) {
+    if (!Number.isFinite(input.runnerId) || input.runnerId <= 0) return;
+    if (!Number.isFinite(input.complaintId) || input.complaintId <= 0) return;
+    if (!Number.isFinite(input.orderId) || input.orderId <= 0) return;
+
+    const payload = {
+      runnerId: Math.trunc(input.runnerId),
+      complaintId: Math.trunc(input.complaintId),
+      orderId: Math.trunc(input.orderId),
+      message: typeof input.message === "string" && input.message.trim() ? input.message.trim() : "您有一条投诉已处理",
+      at: typeof input.at === "string" && input.at.trim() ? input.at.trim() : new Date().toISOString(),
+    };
+
+    const io = websocketService.getIO();
+    io.to(`user:${payload.runnerId}`).emit("complaint:processed", payload);
   }
 }
 

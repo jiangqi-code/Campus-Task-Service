@@ -38,6 +38,13 @@ enum RefundStatus {
   REJECTED
 }
 
+enum ComplaintStatus {
+  PENDING
+  PROCESSING
+  RESOLVED
+  REJECTED
+}
+
 model User {
   id           Int      @id @default(autoincrement())
   student_id   String?  @unique
@@ -56,6 +63,7 @@ model User {
   wallet       UserWallet?
   tasks        Task[]   @relation("TaskPublisher")
   orders_taken Order[]  @relation("OrderTaker")
+  reports      Report[] @relation("ReportRunner")
   earnings     Earning[]
   withdraws    Withdraw[] @relation("WithdrawUser")
   withdraw_audits Withdraw[] @relation("WithdrawAuditAdmin")
@@ -63,6 +71,9 @@ model User {
   refunds_as_runner Refund[] @relation("RefundRunner")
   refund_audits Refund[] @relation("RefundAuditAdmin")
   admin_logs   AdminLog[]
+  login_logs   LoginLog[]
+  complaints_created Complaint[] @relation("ComplaintCreator")
+  complaints_processed Complaint[] @relation("ComplaintAdmin")
 
   @@map("users")
 }
@@ -165,9 +176,11 @@ model Order {
   taker  User?  @relation("OrderTaker", fields: [taker_id], references: [id], onDelete: SetNull)
   track  OrderTrack?
   review OrderReview?
+  reports Report[]
   earnings Earning[]
   wallet_logs WalletLog[] @relation("WalletLogOrder")
   refund Refund?
+  complaint Complaint?
 
   @@index([task_id])
   @@index([taker_id])
@@ -268,6 +281,31 @@ model Refund {
   @@map("refunds")
 }
 
+model Complaint {
+  id          Int             @id @default(autoincrement())
+  order_id     Int             @unique
+  creator_id   Int
+  reason      String          @db.Text
+  description String?         @db.Text
+  photos_json Json?
+  status      ComplaintStatus @default(PENDING)
+  admin_note  String?         @db.Text
+  admin_id    Int?
+  processed_at DateTime?
+  created_at  DateTime        @default(now())
+  updated_at  DateTime        @default(now()) @updatedAt
+
+  order   Order @relation(fields: [order_id], references: [id], onDelete: Cascade)
+  creator User  @relation("ComplaintCreator", fields: [creator_id], references: [id], onDelete: Cascade)
+  admin   User? @relation("ComplaintAdmin", fields: [admin_id], references: [id], onDelete: SetNull)
+
+  @@index([creator_id])
+  @@index([admin_id])
+  @@index([status])
+  @@index([created_at])
+  @@map("complaints")
+}
+
 model SystemConfig {
   id         Int      @id @default(autoincrement())
   key        String   @unique
@@ -293,4 +331,54 @@ model AdminLog {
   @@index([admin_id])
   @@index([target_type, target_id])
   @@map("admin_logs")
+}
+
+model LoginLog {
+  id         Int      @id @default(autoincrement())
+  user_id    Int
+  login_time DateTime @default(now())
+  ip         String   @db.VarChar(45)
+  user_agent String   @db.Text
+  created_at DateTime @default(now())
+
+  user User @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([user_id])
+  @@index([login_time])
+  @@index([ip])
+  @@map("login_log")
+}
+
+model Report {
+  id          Int      @id @default(autoincrement())
+  order_id    Int
+  runner_id   Int
+  type        String   @db.VarChar(50)
+  description String   @db.Text
+  photos_json Json?
+  created_at  DateTime @default(now())
+  updated_at  DateTime @default(now()) @updatedAt
+
+  order  Order @relation(fields: [order_id], references: [id], onDelete: Cascade)
+  runner User  @relation("ReportRunner", fields: [runner_id], references: [id], onDelete: Cascade)
+
+  @@index([order_id])
+  @@index([runner_id])
+  @@index([created_at])
+  @@map("reports")
+}
+
+model ErrorLog {
+  id            Int      @id @default(autoincrement())
+  error_message String   @db.Text
+  stack         String?  @db.Text
+  url           String   @db.Text
+  method        String   @db.VarChar(16)
+  ip            String   @db.VarChar(45)
+  user_id       Int?
+  created_at    DateTime @default(now())
+
+  @@index([user_id])
+  @@index([created_at])
+  @@map("error_log")
 }

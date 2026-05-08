@@ -1,6 +1,7 @@
 import type { RequestHandler } from "express";
 import { OrderStatus } from "@prisma/client";
 import { AdminError, AdminService } from "../services/admin.service";
+import { ExportError, exportOrders as exportOrdersService } from "../services/export.service";
 
 const adminService = new AdminService();
 
@@ -40,6 +41,29 @@ export const getDashboard: RequestHandler = async (req, res, next) => {
     }
 
     const result = await adminService.getDashboard();
+    res.status(200).json(result);
+  } catch (err) {
+    if (err instanceof AdminError) {
+      res.status(err.status).json({ error: err.message });
+      return;
+    }
+    next(err);
+  }
+};
+
+export const getHeatmapData: RequestHandler = async (req, res, next) => {
+  try {
+    const user = req.user;
+    if (!user) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+
+    const result = await adminService.getHeatmapData({
+      startDate: req.query.start_date,
+      endDate: req.query.end_date,
+    });
+
     res.status(200).json(result);
   } catch (err) {
     if (err instanceof AdminError) {
@@ -104,6 +128,64 @@ export const getLogs: RequestHandler = async (req, res, next) => {
   }
 };
 
+export const getLoginLogs: RequestHandler = async (req, res, next) => {
+  try {
+    const user = req.user;
+    if (!user) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+
+    const result = await adminService.getLoginLogs({
+      page: req.query.page,
+      pageSize: req.query.pageSize,
+      userId: req.query.user_id,
+      keyword: req.query.keyword,
+      ip: req.query.ip,
+      startDate: req.query.start_date,
+      endDate: req.query.end_date,
+    });
+
+    res.status(200).json(result);
+  } catch (err) {
+    if (err instanceof AdminError) {
+      res.status(err.status).json({ error: err.message });
+      return;
+    }
+    next(err);
+  }
+};
+
+export const getErrorLogs: RequestHandler = async (req, res, next) => {
+  try {
+    const user = req.user;
+    if (!user) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+
+    const result = await adminService.getErrorLogs({
+      page: req.query.page,
+      pageSize: req.query.pageSize,
+      userId: req.query.user_id,
+      keyword: req.query.keyword,
+      url: req.query.url,
+      method: req.query.method,
+      ip: req.query.ip,
+      startDate: req.query.start_date,
+      endDate: req.query.end_date,
+    });
+
+    res.status(200).json(result);
+  } catch (err) {
+    if (err instanceof AdminError) {
+      res.status(err.status).json({ error: err.message });
+      return;
+    }
+    next(err);
+  }
+};
+
 export const freezeUser: RequestHandler = async (req, res, next) => {
   try {
     const user = req.user;
@@ -147,6 +229,27 @@ export const deleteUser: RequestHandler = async (req, res, next) => {
 
     const userId = Number.parseInt(String(req.params.userId ?? ""), 10);
     const result = await adminService.deleteUser({ adminId: user.id, userId });
+
+    res.status(200).json(result);
+  } catch (err) {
+    if (err instanceof AdminError) {
+      res.status(err.status).json({ error: err.message });
+      return;
+    }
+    next(err);
+  }
+};
+
+export const resetPassword: RequestHandler = async (req, res, next) => {
+  try {
+    const user = req.user;
+    if (!user) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+
+    const userId = Number.parseInt(String(req.params.userId ?? ""), 10);
+    const result = await adminService.resetPassword({ adminId: user.id, userId });
 
     res.status(200).json(result);
   } catch (err) {
@@ -288,6 +391,33 @@ export const orderList: RequestHandler = async (req, res, next) => {
     res.status(200).json(result);
   } catch (err) {
     if (err instanceof AdminError) {
+      res.status(err.status).json({ error: err.message });
+      return;
+    }
+    next(err);
+  }
+};
+
+export const exportOrders: RequestHandler = async (req, res, next) => {
+  try {
+    const user = req.user;
+    if (!user) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+
+    const file = await exportOrdersService({
+      status: req.query.status,
+      startDate: req.query.start_date ?? req.query.startDate,
+      endDate: req.query.end_date ?? req.query.endDate,
+      format: req.query.format,
+    });
+
+    res.setHeader("Content-Type", file.contentType);
+    res.setHeader("Content-Disposition", `attachment; filename="${file.filename}"`);
+    res.status(200).send(file.data);
+  } catch (err) {
+    if (err instanceof ExportError) {
       res.status(err.status).json({ error: err.message });
       return;
     }

@@ -1,7 +1,5 @@
 import cron, { type ScheduledTask } from "node-cron";
-const prismaClientModule = require("@prisma/client") as any;
-const PrismaClient = prismaClientModule.PrismaClient as any;
-const TaskStatus = prismaClientModule.TaskStatus as any;
+import { PrismaClient, TaskStatus } from "@prisma/client";
 
 const prisma = new PrismaClient();
 
@@ -39,24 +37,10 @@ export class ScheduledTaskService {
 
   private async processDueTasks() {
     const now = new Date();
-    const candidates = await prisma.task.findMany({
+    await prisma.task.updateMany({
       where: { status: TaskStatus.SCHEDULED, scheduled_time: { lte: now } },
-      select: { id: true },
-      take: 200,
-      orderBy: { scheduled_time: "asc" },
+      data: { status: TaskStatus.PENDING },
     });
-
-    for (const row of candidates) {
-      await prisma.task
-        .updateMany({
-          where: { id: row.id, status: TaskStatus.SCHEDULED, scheduled_time: { lte: now } },
-          data: { status: TaskStatus.PENDING },
-        })
-        .catch((err: unknown) => {
-          const message = err instanceof Error ? err.message : String(err);
-          console.error("[scheduledTask.processDueTasks] failed:", { taskId: row.id, message });
-        });
-    }
   }
 }
 

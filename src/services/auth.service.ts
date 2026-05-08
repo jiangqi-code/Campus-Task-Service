@@ -24,6 +24,8 @@ type RegisterInput = {
 type LoginInput = {
   account: string;
   password: string;
+  ip?: string;
+  userAgent?: string;
 };
 
 export const UserAuthStatus = {
@@ -170,6 +172,21 @@ export class AuthService {
     if (!ok) {
       throw new AuthError(401, "账号或密码错误");
     }
+
+    const loginTime = new Date();
+    const ip = typeof input.ip === "string" ? input.ip.trim() : "";
+    const userAgent = typeof input.userAgent === "string" ? input.userAgent.trim() : "";
+
+    await prisma.loginLog
+      .create({
+        data: {
+          user_id: user.id,
+          login_time: loginTime,
+          ip,
+          user_agent: userAgent,
+        },
+      })
+      .catch(() => null);
 
     const token = signToken({ userId: user.id, role: user.role });
     return { token };
