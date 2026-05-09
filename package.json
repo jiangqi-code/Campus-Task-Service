@@ -13,7 +13,9 @@
   "dependencies": {
     "@prisma/client": "^6.0.0",
     "@types/node-cron": "^3.0.11",
+    "auto-swagger-js": "^1.0.3",
     "bcryptjs": "^3.0.0",
+    "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "exceljs": "^4.4.0",
     "express": "^4.21.0",
@@ -24,16 +26,20 @@
     "redis": "^4.7.0",
     "sharp": "^0.34.3",
     "socket.io": "^4.8.3",
-    "socket.io-client": "^4.8.3"
+    "socket.io-client": "^4.8.3",
+    "swagger-jsdoc": "^6.2.8",
+    "swagger-ui-express": "^5.0.0"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",
+    "@types/cors": "^2.8.19",
     "@types/express": "^4.17.21",
     "@types/json2csv": "^5.0.7",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/multer": "^1.4.13",
     "@types/node": "^20.11.30",
     "@types/socket.io": "^3.0.1",
+    "@types/swagger-ui-express": "^4.1.8",
     "prisma": "^6.0.0",
     "ts-node-dev": "^2.0.0",
     "typescript": "^5.6.3"

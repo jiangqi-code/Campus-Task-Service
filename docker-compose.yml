@@ -40,7 +40,7 @@ services:
       DATABASE_URL: "mysql://root:123456@mysql:3306/campus_express"
       REDIS_URL: "redis://redis:6379"
       JWT_SECRET: "your-production-secret-key"
-    command: sh -c "npx prisma migrate deploy && npm start"
+    command: sh -c "npx prisma migrate deploy && npm run dev"
 
 volumes:
   mysql_data:

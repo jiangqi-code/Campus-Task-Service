@@ -161,7 +161,17 @@ export class AuthService {
 
     const user = await prisma.user.findFirst({
       where: { OR: [{ student_id: account }, { phone: account }] },
-      select: { id: true, role: true, password_hash: true },
+      select: {
+        id: true,
+        student_id: true,
+        phone: true,
+        nickname: true,
+        avatar: true,
+        role: true,
+        status: true,
+        credit_score: true,
+        password_hash: true,
+      },
     });
 
     if (!user?.password_hash) {
@@ -189,7 +199,8 @@ export class AuthService {
       .catch(() => null);
 
     const token = signToken({ userId: user.id, role: user.role });
-    return { token };
+    const { password_hash: _passwordHash, ...safeUser } = user;
+    return { token, user: safeUser };
   }
 
   async me(userId: number) {

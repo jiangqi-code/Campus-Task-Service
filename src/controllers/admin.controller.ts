@@ -1,5 +1,12 @@
 import type { RequestHandler } from "express";
-import { OrderStatus } from "@prisma/client";
+// 手动声明 OrderStatus 枚举，解决找不到 @prisma/client 类型声明的问题
+enum OrderStatus {
+  PENDING = "PENDING",
+  PAID = "PAID",
+  SHIPPED = "SHIPPED",
+  COMPLETED = "COMPLETED",
+  CANCELLED = "CANCELLED",
+}
 import { AdminError, AdminService } from "../services/admin.service";
 import { ExportError, exportOrders as exportOrdersService } from "../services/export.service";
 

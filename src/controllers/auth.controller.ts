@@ -36,14 +36,14 @@ export const login: RequestHandler = async (req, res, next) => {
       password: string;
     }>;
 
-    const result = await authService.login({
+    const { token, user } = await authService.login({
       account: account ?? "",
       password: password ?? "",
       ip: req.ip,
       userAgent: req.get("user-agent") ?? "",
     });
 
-    res.status(200).json(result);
+    res.status(200).json({ token, user });
   } catch (err) {
     if (err instanceof AuthError) {
       res.status(err.status).json({ error: err.message });
