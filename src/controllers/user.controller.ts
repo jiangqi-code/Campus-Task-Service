@@ -5,6 +5,7 @@ import path from "path";
 import sharp from "sharp";
 import { createFilename, extFromMimeType, uploadsDir } from "../middleware/upload.middleware";
 import {
+  getUserInfo as getUserInfoService,
   switchRole as switchRoleService,
   UserError,
   updateProfile as updateProfileService,
@@ -188,6 +189,32 @@ export const switchRole: RequestHandler = async (req, res, next) => {
 
     const updated = await switchRoleService({ userId: user.id });
     res.status(200).json({ user: updated });
+  } catch (err) {
+    if (err instanceof UserError) {
+      res.status(err.status).json({ error: err.message });
+      return;
+    }
+    next(err);
+  }
+};
+
+export const getUserInfo: RequestHandler = async (req, res, next) => {
+  try {
+    const user = req.user;
+    if (!user) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+
+    const rawUserId = req.params.userId;
+    const userId = Number.parseInt(rawUserId, 10);
+    if (!Number.isFinite(userId) || String(userId) !== rawUserId.trim()) {
+      next();
+      return;
+    }
+
+    const result = await getUserInfoService({ userId });
+    res.status(200).json(result);
   } catch (err) {
     if (err instanceof UserError) {
       res.status(err.status).json({ error: err.message });

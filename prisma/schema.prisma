@@ -63,6 +63,8 @@ model User {
   wallet       UserWallet?
   tasks        Task[]   @relation("TaskPublisher")
   orders_taken Order[]  @relation("OrderTaker")
+  chat_messages_sent ChatMessage[] @relation("ChatMessageFromUser")
+  chat_messages_received ChatMessage[] @relation("ChatMessageToUser")
   reports      Report[] @relation("ReportRunner")
   earnings     Earning[]
   withdraws    Withdraw[] @relation("WithdrawUser")
@@ -181,10 +183,29 @@ model Order {
   wallet_logs WalletLog[] @relation("WalletLogOrder")
   refund Refund?
   complaint Complaint?
+  chat_messages ChatMessage[]
 
   @@index([task_id])
   @@index([taker_id])
   @@map("orders")
+}
+
+model ChatMessage {
+  id           Int      @id @default(autoincrement())
+  order_id     Int
+  from_user_id Int
+  to_user_id   Int
+  message      String   @db.Text
+  created_at   DateTime @default(now())
+
+  order     Order @relation(fields: [order_id], references: [id], onDelete: Cascade)
+  from_user User  @relation("ChatMessageFromUser", fields: [from_user_id], references: [id], onDelete: Cascade)
+  to_user   User  @relation("ChatMessageToUser", fields: [to_user_id], references: [id], onDelete: Cascade)
+
+  @@index([order_id, created_at])
+  @@index([from_user_id])
+  @@index([to_user_id])
+  @@map("chat_message")
 }
 
 model OrderTrack {

@@ -6,6 +6,7 @@ import {
   cancelOrder as cancelOrderService,
   completeOrder,
   deliverOrder,
+  getOrderDetail as getOrderDetailService,
   getOrderTrack as getOrderTrackService,
   listOrders as listOrdersService,
   pickupOrder,
@@ -44,7 +45,14 @@ export const pickup: RequestHandler = async (req, res, next) => {
     }
 
     const orderId = Number.parseInt(String(req.params.orderId ?? ""), 10);
-    const order = await pickupOrder(orderId, user.id);
+    const photoUrl = readBodyUrl((req as any).body, [
+      "pickup_photo_url",
+      "pickupPhotoUrl",
+      "photo_url",
+      "photoUrl",
+      "url",
+    ]);
+    const order = await pickupOrder(orderId, user.id, photoUrl ?? undefined);
     res.status(200).json({ order });
   } catch (err) {
     if (err instanceof OrderError) {
@@ -64,7 +72,14 @@ export const deliver: RequestHandler = async (req, res, next) => {
     }
 
     const orderId = Number.parseInt(String(req.params.orderId ?? ""), 10);
-    const order = await deliverOrder(orderId, user.id);
+    const photoUrl = readBodyUrl((req as any).body, [
+      "delivery_photo_url",
+      "deliveryPhotoUrl",
+      "photo_url",
+      "photoUrl",
+      "url",
+    ]);
+    const order = await deliverOrder(orderId, user.id, photoUrl ?? undefined);
     res.status(200).json({ order });
   } catch (err) {
     if (err instanceof OrderError) {
@@ -84,7 +99,14 @@ export const complete: RequestHandler = async (req, res, next) => {
     }
 
     const orderId = Number.parseInt(String(req.params.orderId ?? ""), 10);
-    const order = await completeOrder(orderId, user.id);
+    const photoUrl = readBodyUrl((req as any).body, [
+      "delivery_photo_url",
+      "deliveryPhotoUrl",
+      "photo_url",
+      "photoUrl",
+      "url",
+    ]);
+    const order = await completeOrder(orderId, user.id, photoUrl ?? undefined);
     res.status(200).json({ order });
   } catch (err) {
     if (err instanceof OrderError) {
@@ -200,6 +222,16 @@ const getUploadedFilename = (req: unknown, fieldName: string): string | null => 
   return first.filename.trim();
 };
 
+function readBodyUrl(body: unknown, keys: string[]): string | null {
+  if (!body || typeof body !== "object") return null;
+  const obj = body as Record<string, unknown>;
+  for (const k of keys) {
+    const v = obj[k];
+    if (typeof v === "string" && v.trim()) return v.trim();
+  }
+  return null;
+}
+
 export const uploadPickupPhoto: RequestHandler = async (req, res, next) => {
   try {
     const user = req.user;
@@ -264,7 +296,27 @@ export const getTrack: RequestHandler = async (req, res, next) => {
 
     const orderId = Number.parseInt(String(req.params.orderId ?? ""), 10);
     const track = await getOrderTrackService(orderId, user.id, String(user.role));
-    res.status(200).json({ track });
+    res.status(200).json(track);
+  } catch (err) {
+    if (err instanceof OrderError) {
+      res.status(err.status).json({ error: err.message });
+      return;
+    }
+    next(err);
+  }
+};
+
+export const detail: RequestHandler = async (req, res, next) => {
+  try {
+    const user = req.user;
+    if (!user) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+
+    const orderId = Number.parseInt(String(req.params.id ?? ""), 10);
+    const order = await getOrderDetailService(orderId, user.id, String(user.role));
+    res.status(200).json(order);
   } catch (err) {
     if (err instanceof OrderError) {
       res.status(err.status).json({ error: err.message });

@@ -220,28 +220,42 @@ export class TaskService {
       throw new TaskError(400, "scheduled_time 不合法");
     }
 
-    const task = await prisma.task.create({
-      data: {
-        publisher_id: input.publisherId,
-        pickup_address,
-        pickup_lat,
-        pickup_lng,
-        delivery_address,
-        delivery_lat,
-        delivery_lng,
-        type,
-        urgency: typeof urgency === "number" && Number.isFinite(urgency) ? urgency : 0,
-        remark,
-        images_json: input.images_json as Prisma.InputJsonValue | undefined,
-        weight: weight || null,
-        size: size || null,
-        is_fragile,
-        need_inspection,
-        fee_total,
-        tip,
-        scheduled_time,
-        status: scheduled_time ? TaskStatus.SCHEDULED : TaskStatus.PENDING,
-      },
+    const task = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+      const wallet = await tx.userWallet.findUnique({
+        where: { user_id: input.publisherId },
+        select: { balance: true },
+      });
+
+      const balance = wallet?.balance ?? new Prisma.Decimal(0);
+      const requiredAmount = fee_total.plus(tip);
+
+      if (balance.lt(requiredAmount)) {
+        throw new TaskError(409, "余额不足，无法发布任务");
+      }
+
+      return tx.task.create({
+        data: {
+          publisher_id: input.publisherId,
+          pickup_address,
+          pickup_lat,
+          pickup_lng,
+          delivery_address,
+          delivery_lat,
+          delivery_lng,
+          type,
+          urgency: typeof urgency === "number" && Number.isFinite(urgency) ? urgency : 0,
+          remark,
+          images_json: input.images_json as Prisma.InputJsonValue | undefined,
+          weight: weight || null,
+          size: size || null,
+          is_fragile,
+          need_inspection,
+          fee_total,
+          tip,
+          scheduled_time,
+          status: scheduled_time ? TaskStatus.SCHEDULED : TaskStatus.PENDING,
+        },
+      });
     });
 
     return task;

@@ -72,6 +72,29 @@ const isListableOrderStatus = (value: unknown): value is OrderStatus => {
   );
 };
 
+const computeOrderProgressPercent = (input: {
+  status: OrderStatus;
+  acceptTime: Date | null;
+  etaMinutes: number | null;
+}) => {
+  const { status, acceptTime, etaMinutes } = input;
+
+  if (status === OrderStatus.COMPLETED) return 100;
+  if (status === OrderStatus.ACCEPTED) return 0;
+  if (status === OrderStatus.PICKED) return 30;
+  if (status === OrderStatus.DELIVERING) {
+    const start = acceptTime?.getTime() ?? null;
+    const eta = typeof etaMinutes === "number" && Number.isFinite(etaMinutes) && etaMinutes > 0 ? etaMinutes : null;
+    if (!start || !eta) return 0;
+
+    const percent = ((Date.now() - start) / (eta * 60_000)) * 100;
+    if (!Number.isFinite(percent)) return 0;
+    return Math.min(99, Math.max(0, Math.floor(percent)));
+  }
+
+  return 0;
+};
+
 let redisClient: RedisClientType | null = null;
 let redisConnecting: Promise<RedisClientType> | null = null;
 
@@ -150,6 +173,88 @@ const transitionOrderStatus = async (orderId: number, userId: number, nextStatus
       where: { id: orderId },
       data: toTransitionUpdate(nextStatus),
     });
+
+    if (nextStatus === OrderStatus.COMPLETED) {
+      const completeTime = updated.complete_time ?? new Date();
+      const onTime = isOnTimeDelivery({
+        acceptTime: order.accept_time,
+        createdAt: order.created_at,
+        completeTime,
+        etaMinutes: order.eta_minutes,
+      });
+      await creditService.changeCreditScore({
+        tx,
+        userId,
+        delta: 2 + (onTime ? 1 : 0),
+      });
+    }
+
+    return { order, updated };
+  });
+
+  notificationService
+    .notifyOrderStatusChanged({ orderId: result.updated.id, fromStatus: result.order.status, toStatus: nextStatus })
+    .catch(() => { });
+
+  return result.updated;
+};
+
+const transitionOrderStatusWithTrack = async (
+  orderId: number,
+  userId: number,
+  nextStatus: OrderStatus,
+  trackUpdate?: { pickup_photo_url?: string; delivery_photo_url?: string }
+) => {
+  if (!Number.isFinite(orderId) || orderId <= 0) {
+    throw new OrderError(400, "orderId 不合法");
+  }
+  if (!Number.isFinite(userId) || userId <= 0) {
+    throw new OrderError(400, "userId 不合法");
+  }
+
+  const trimmedPickup = trackUpdate?.pickup_photo_url?.trim();
+  const trimmedDelivery = trackUpdate?.delivery_photo_url?.trim();
+  const normalizedTrack =
+    trimmedPickup || trimmedDelivery
+      ? {
+        pickup_photo_url: trimmedPickup || undefined,
+        delivery_photo_url: trimmedDelivery || undefined,
+      }
+      : undefined;
+
+  const result = await prisma.$transaction(async (tx) => {
+    const order = await tx.order.findUnique({ where: { id: orderId } });
+    if (!order) {
+      throw new OrderError(404, "订单不存在");
+    }
+    if (order.taker_id !== userId) {
+      throw new OrderError(403, "无权限");
+    }
+
+    const normalizeStatus = (value: unknown) => (typeof value === "string" ? value : String(value));
+    const allowedNext = allowedTransitions[order.status];
+    console.log("[transitionOrderStatusWithTrack]", {
+      "order.status": order.status,
+      nextStatus,
+      allowedNext,
+    });
+
+    if (!allowedNext || normalizeStatus(allowedNext) !== normalizeStatus(nextStatus)) {
+      throw new OrderError(409, "非法状态转换");
+    }
+
+    const updated = await tx.order.update({
+      where: { id: orderId },
+      data: toTransitionUpdate(nextStatus),
+    });
+
+    if (normalizedTrack) {
+      await tx.orderTrack.upsert({
+        where: { order_id: orderId },
+        update: normalizedTrack,
+        create: { order_id: orderId, ...normalizedTrack },
+      });
+    }
 
     if (nextStatus === OrderStatus.COMPLETED) {
       const completeTime = updated.complete_time ?? new Date();
@@ -285,16 +390,24 @@ export const acceptTask = async (taskId: number, userId: number) => {
   }
 };
 
-export const pickupOrder = async (orderId: number, userId: number) => {
-  return transitionOrderStatus(orderId, userId, OrderStatus.PICKED);
+export const pickupOrder = async (orderId: number, userId: number, pickupPhotoUrl?: string) => {
+  const url = typeof pickupPhotoUrl === "string" && pickupPhotoUrl.trim() ? pickupPhotoUrl.trim() : undefined;
+  return transitionOrderStatusWithTrack(orderId, userId, OrderStatus.PICKED, url ? { pickup_photo_url: url } : undefined);
 };
 
-export const deliverOrder = async (orderId: number, userId: number) => {
-  return transitionOrderStatus(orderId, userId, OrderStatus.DELIVERING);
+export const deliverOrder = async (orderId: number, userId: number, deliveryPhotoUrl?: string) => {
+  const url = typeof deliveryPhotoUrl === "string" && deliveryPhotoUrl.trim() ? deliveryPhotoUrl.trim() : undefined;
+  return transitionOrderStatusWithTrack(
+    orderId,
+    userId,
+    OrderStatus.DELIVERING,
+    url ? { delivery_photo_url: url } : undefined
+  );
 };
 
-export const completeOrder = async (orderId: number, userId: number) => {
-  return transitionOrderStatus(orderId, userId, OrderStatus.COMPLETED);
+export const completeOrder = async (orderId: number, userId: number, deliveryPhotoUrl?: string) => {
+  const url = typeof deliveryPhotoUrl === "string" && deliveryPhotoUrl.trim() ? deliveryPhotoUrl.trim() : undefined;
+  return transitionOrderStatusWithTrack(orderId, userId, OrderStatus.COMPLETED, url ? { delivery_photo_url: url } : undefined);
 };
 
 const isRunner = (role: string) => role.trim().toUpperCase() === "RUNNER";
@@ -395,7 +508,25 @@ export const getOrderTrack = async (orderId: number, userId: number, role: strin
 
   const order = await prisma.order.findUnique({
     where: { id: orderId },
-    select: { id: true, taker_id: true, task: { select: { publisher_id: true } } },
+    select: {
+      id: true,
+      status: true,
+      taker_id: true,
+      accept_time: true,
+      pickup_time: true,
+      delivery_time: true,
+      complete_time: true,
+      eta_minutes: true,
+      task: {
+        select: {
+          publisher_id: true,
+          pickup_lat: true,
+          pickup_lng: true,
+          delivery_lat: true,
+          delivery_lng: true,
+        },
+      },
+    },
   });
   if (!order) {
     throw new OrderError(404, "订单不存在");
@@ -415,7 +546,173 @@ export const getOrderTrack = async (orderId: number, userId: number, role: strin
     select: selectOrderTrack,
   });
 
-  return track;
+  const toFiniteNumberOrNull = (value: unknown): number | null => {
+    if (value === null || value === undefined) return null;
+    if (typeof value === "number") return Number.isFinite(value) ? value : null;
+    if (typeof value === "string") {
+      const n = Number(value);
+      return Number.isFinite(n) ? n : null;
+    }
+    if (typeof value === "object") {
+      const maybeDecimal = value as { toNumber?: () => number };
+      if (typeof maybeDecimal.toNumber === "function") {
+        const n = maybeDecimal.toNumber();
+        return Number.isFinite(n) ? n : null;
+      }
+    }
+    return null;
+  };
+
+  const pickupLat = toFiniteNumberOrNull((order.task as unknown as Record<string, unknown>).pickup_lat);
+  const pickupLng = toFiniteNumberOrNull((order.task as unknown as Record<string, unknown>).pickup_lng);
+  const deliveryLat = toFiniteNumberOrNull((order.task as unknown as Record<string, unknown>).delivery_lat);
+  const deliveryLng = toFiniteNumberOrNull((order.task as unknown as Record<string, unknown>).delivery_lng);
+
+  const totalEtaMinutes =
+    typeof order.eta_minutes === "number" && Number.isFinite(order.eta_minutes) && order.eta_minutes > 0
+      ? Math.trunc(order.eta_minutes)
+      : null;
+
+  const now = Date.now();
+  const startAt = order.pickup_time?.getTime() ?? null;
+  const completeAt = order.complete_time?.getTime() ?? null;
+  const elapsedMinutes =
+    startAt && startAt > 0 && completeAt === null ? Math.max(0, Math.floor((now - startAt) / 60000)) : 0;
+
+  const etaRemaining =
+    totalEtaMinutes === null
+      ? null
+      : completeAt
+        ? 0
+        : startAt
+          ? Math.max(0, totalEtaMinutes - elapsedMinutes)
+          : totalEtaMinutes;
+
+  const computeProgress = () => {
+    if (pickupLat === null || pickupLng === null || deliveryLat === null || deliveryLng === null) return null;
+    if (!startAt) return 0;
+    if (completeAt) return 1;
+    if (!totalEtaMinutes) return 0.5;
+    const ratio = (now - startAt) / (totalEtaMinutes * 60_000);
+    if (!Number.isFinite(ratio)) return 0.5;
+    return Math.min(0.98, Math.max(0, ratio));
+  };
+
+  const progress = computeProgress();
+  const current_location =
+    progress === null
+      ? null
+      : {
+        lat: Number((pickupLat! + (deliveryLat! - pickupLat!) * progress).toFixed(6)),
+        lng: Number((pickupLng! + (deliveryLng! - pickupLng!) * progress).toFixed(6)),
+      };
+
+  return {
+    pickup_photo_url: track.pickup_photo_url,
+    delivery_photo_url: track.delivery_photo_url,
+    pickup_time: order.pickup_time,
+    delivery_time: order.complete_time ?? order.delivery_time,
+    eta_minutes: etaRemaining,
+    current_location,
+  };
+};
+
+export const getOrderDetail = async (orderId: number, userId: number, role: string) => {
+  if (!Number.isFinite(orderId) || orderId <= 0) {
+    throw new OrderError(400, "orderId 不合法");
+  }
+  if (!Number.isFinite(userId) || userId <= 0) {
+    throw new OrderError(400, "userId 不合法");
+  }
+
+  const roleStr = typeof role === "string" ? role : String(role);
+
+  const order = await prisma.order.findUnique({
+    where: { id: orderId },
+    select: {
+      id: true,
+      status: true,
+      final_price: true,
+      created_at: true,
+      accept_time: true,
+      taker_id: true,
+      pickup_time: true,
+      delivery_time: true,
+      complete_time: true,
+      eta_minutes: true,
+      task: {
+        select: {
+          pickup_address: true,
+          delivery_address: true,
+          fee_total: true,
+          tip: true,
+          publisher_id: true,
+          publisher: { select: { id: true, nickname: true } },
+        },
+      },
+      taker: { select: { id: true, nickname: true, phone: true } },
+    },
+  });
+
+  if (!order) {
+    throw new OrderError(404, "订单不存在");
+  }
+
+  const allowed =
+    isAdmin(roleStr) ||
+    (isRunner(roleStr) ? order.taker_id === userId : order.task.publisher_id === userId);
+  if (!allowed) {
+    throw new OrderError(403, "无权限");
+  }
+
+  const track = await prisma.orderTrack.findUnique({
+    where: { order_id: orderId },
+    select: { pickup_photo_url: true, delivery_photo_url: true },
+  });
+
+  const isAcceptedOrAfter =
+    order.status === OrderStatus.ACCEPTED ||
+    order.status === OrderStatus.PICKED ||
+    order.status === OrderStatus.DELIVERING ||
+    order.status === OrderStatus.COMPLETED;
+
+  const accept_time = order.accept_time ?? (isAcceptedOrAfter ? order.created_at : null);
+  const progress_percent = computeOrderProgressPercent({
+    status: order.status,
+    acceptTime: accept_time,
+    etaMinutes: order.eta_minutes ?? null,
+  });
+
+  return {
+    id: order.id,
+    accept_time,
+    status: order.status,
+    progress_percent,
+    final_price: order.final_price ?? null,
+    created_at: order.created_at,
+    task: {
+      pickup_address: order.task.pickup_address,
+      delivery_address: order.task.delivery_address,
+      fee_total: order.task.fee_total,
+      tip: order.task.tip ?? null,
+    },
+    taker: {
+      id: order.taker?.id ?? null,
+      nickname: order.taker?.nickname ?? null,
+      phone: order.taker?.phone ?? null,
+    },
+    publisher: {
+      id: order.task.publisher.id,
+      nickname: order.task.publisher.nickname,
+    },
+    track: {
+      pickup_photo_url: track?.pickup_photo_url ?? null,
+      delivery_photo_url: track?.delivery_photo_url ?? null,
+      pickup_time: order.pickup_time,
+      delivery_time: order.complete_time ?? order.delivery_time,
+      eta_minutes: order.eta_minutes ?? null,
+    },
+  };
 };
 
 const roundMoney = (value: Prisma.Decimal) =>

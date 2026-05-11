@@ -162,3 +162,24 @@ export const switchRole = async (input: SwitchRoleInput) => {
 
   return result;
 };
+
+type GetUserInfoInput = {
+  userId: number;
+};
+
+export const getUserInfo = async (input: GetUserInfoInput) => {
+  if (!Number.isFinite(input.userId) || input.userId <= 0) {
+    throw new UserError(400, "userId 不合法");
+  }
+
+  const user = await prisma.user.findUnique({
+    where: { id: input.userId },
+    select: { id: true, nickname: true, phone: true, avatar: true, status: true },
+  });
+
+  if (!user || user.status === -1) {
+    throw new UserError(404, "用户不存在");
+  }
+
+  return { id: user.id, nickname: user.nickname, phone: user.phone, avatar: user.avatar };
+};
