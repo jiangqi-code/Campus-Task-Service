@@ -37,11 +37,19 @@ const prisma = new PrismaClient();
 type GetOrderListInput = {
   userId: number;
   role: string;
+  type?: unknown;
   status?: unknown;
   page?: unknown;
   pageSize?: unknown;
   sortBy?: unknown;
   sortOrder?: unknown;
+};
+
+type ListOrdersInput = {
+  userId: number;
+  type: unknown;
+  page?: unknown;
+  pageSize?: unknown;
 };
 
 const parseIntOr = (value: unknown, fallback: number) => {
@@ -665,6 +673,78 @@ export const urgeOrder = async (orderId: number, userId: number) => {
   }
 };
 
+export const listOrders = async (input: ListOrdersInput) => {
+  if (!Number.isFinite(input.userId) || input.userId <= 0) {
+    throw new OrderError(400, "userId 不合法");
+  }
+
+  const page = Math.max(1, parseIntOr(input.page, 1));
+  const pageSize = Math.min(100, Math.max(1, parseIntOr(input.pageSize, 10)));
+  const skip = (page - 1) * pageSize;
+
+  const typeRaw = typeof input.type === "string" ? input.type.trim().toLowerCase() : "";
+  const type = typeRaw === "published" || typeRaw === "taken" ? typeRaw : "";
+  if (!type) {
+    throw new OrderError(400, "type 不合法");
+  }
+
+  const where: Prisma.OrderWhereInput =
+    type === "published" ? { task: { publisher_id: input.userId } } : { taker_id: input.userId };
+
+  const publishedSelect = {
+    id: true,
+    status: true,
+    created_at: true,
+    taker_id: true,
+    task: { select: { pickup_address: true, delivery_address: true, fee_total: true, tip: true } },
+    taker: { select: { nickname: true } },
+  } as const;
+
+  const takenSelect = {
+    id: true,
+    status: true,
+    created_at: true,
+    final_price: true,
+    task: { select: { pickup_address: true, delivery_address: true, fee_total: true, tip: true } },
+  } as const;
+
+  const select = type === "published" ? publishedSelect : takenSelect;
+
+  const [total, items] = await Promise.all([
+    prisma.order.count({ where }),
+    prisma.order.findMany({
+      where,
+      orderBy: { created_at: "desc" },
+      skip,
+      take: pageSize,
+      select,
+    }),
+  ]);
+
+  const mapped = (items as Array<any>).map((order) => {
+    const base = {
+      id: order.id,
+      status: order.status,
+      created_at: order.created_at,
+      pickup_address: order.task.pickup_address,
+      delivery_address: order.task.delivery_address,
+      fee_total: order.task.fee_total,
+      tip: order.task.tip ?? null,
+    };
+
+    if (type === "taken") {
+      return { ...base, final_price: order.final_price ?? null };
+    }
+    return {
+      ...base,
+      taker_id: order.taker_id ?? null,
+      taker_nickname: order.taker?.nickname ?? null,
+    };
+  });
+
+  return { page, pageSize, total, items: mapped };
+};
+
 export const getOrderList = async (input: GetOrderListInput) => {
   if (!Number.isFinite(input.userId) || input.userId <= 0) {
     throw new OrderError(400, "userId 不合法");
@@ -675,6 +755,12 @@ export const getOrderList = async (input: GetOrderListInput) => {
   const page = Math.max(1, parseIntOr(input.page, 1));
   const pageSize = Math.min(100, Math.max(1, parseIntOr(input.pageSize, 10)));
   const skip = (page - 1) * pageSize;
+
+  const typeRaw = typeof input.type === "string" ? input.type.trim().toLowerCase() : "";
+  const type = typeRaw === "published" || typeRaw === "taken" ? typeRaw : "";
+  if (typeRaw && !type) {
+    throw new OrderError(400, "type 不合法");
+  }
 
   const statusRaw = typeof input.status === "string" ? input.status.trim() : input.status;
   const status = statusRaw ? String(statusRaw) : "";
@@ -688,62 +774,60 @@ export const getOrderList = async (input: GetOrderListInput) => {
   const sortOrderRaw = typeof input.sortOrder === "string" ? input.sortOrder.trim().toLowerCase() : "";
   const sortOrder = sortOrderRaw === "asc" ? "asc" : "desc";
 
+  const view = type || (role === "USER" ? "published" : role === "RUNNER" ? "taken" : "");
+
   const where: Prisma.OrderWhereInput = {
     ...(status ? { status: status as OrderStatus } : undefined),
-    ...(role === "USER"
+    ...(type === "published"
       ? { task: { publisher_id: input.userId } }
-      : role === "RUNNER"
+      : type === "taken"
         ? { taker_id: input.userId }
-        : role === "ADMIN"
-          ? {}
-          : { task: { publisher_id: input.userId } }),
+        : role === "USER"
+          ? { task: { publisher_id: input.userId } }
+          : role === "RUNNER"
+            ? { taker_id: input.userId }
+            : role === "ADMIN"
+              ? {}
+              : { task: { publisher_id: input.userId } }),
   };
 
   const orderBy = { [sortBy]: sortOrder } as Prisma.OrderOrderByWithRelationInput;
 
+  const publishedSelect = {
+    id: true,
+    status: true,
+    created_at: true,
+    taker_id: true,
+    task: { select: { pickup_address: true, delivery_address: true, fee_total: true, tip: true } },
+    taker: { select: { nickname: true } },
+  } as const;
+
+  const takenSelect = {
+    id: true,
+    status: true,
+    created_at: true,
+    final_price: true,
+    task: { select: { pickup_address: true, delivery_address: true, fee_total: true, tip: true } },
+  } as const;
+
+  const defaultSelect = {
+    id: true,
+    status: true,
+    created_at: true,
+    task: { select: { pickup_address: true, delivery_address: true, fee_total: true, tip: true } },
+  } as const;
+
+  const select = view === "published" ? publishedSelect : view === "taken" ? takenSelect : defaultSelect;
+
   const [total, items] = await Promise.all([
     prisma.order.count({ where }),
-    role === "USER"
-      ? prisma.order.findMany({
-        where,
-        orderBy,
-        skip,
-        take: pageSize,
-        select: {
-          id: true,
-          status: true,
-          created_at: true,
-          taker_id: true,
-          task: { select: { pickup_address: true, delivery_address: true, fee_total: true } },
-          taker: { select: { nickname: true } },
-        },
-      })
-      : role === "RUNNER"
-        ? prisma.order.findMany({
-          where,
-          orderBy,
-          skip,
-          take: pageSize,
-          select: {
-            id: true,
-            status: true,
-            created_at: true,
-            final_price: true,
-            task: { select: { pickup_address: true, delivery_address: true, fee_total: true } },
-          },
-        })
-        : prisma.order.findMany({
-          where,
-          orderBy,
-          skip,
-          take: pageSize,
-          select: {
-            id: true,
-            status: true,
-            created_at: true,
-            task: { select: { pickup_address: true, delivery_address: true, fee_total: true } },
-          },
-        }),
+    prisma.order.findMany({
+      where,
+      orderBy,
+      skip,
+      take: pageSize,
+      select,
+    }),
   ]);
 
   const mapped = (items as Array<any>).map((order) => {
@@ -754,12 +838,13 @@ export const getOrderList = async (input: GetOrderListInput) => {
       pickup_address: order.task.pickup_address,
       delivery_address: order.task.delivery_address,
       fee_total: order.task.fee_total,
+      tip: order.task.tip ?? null,
     };
 
-    if (role === "RUNNER") {
+    if (view === "taken") {
       return { ...base, final_price: order.final_price ?? null };
     }
-    if (role === "USER") {
+    if (view === "published") {
       return {
         ...base,
         taker_id: order.taker_id ?? null,

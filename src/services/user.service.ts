@@ -1,4 +1,4 @@
-import { Prisma, PrismaClient } from "@prisma/client";
+import { Prisma, PrismaClient, Role } from "@prisma/client";
 
 export class UserError extends Error {
   public readonly status: number;
@@ -105,4 +105,60 @@ export const updateProfile = async (input: UpdateProfileInput) => {
     }
     throw err;
   }
+};
+
+type SwitchRoleInput = {
+  userId: number;
+};
+
+export const switchRole = async (input: SwitchRoleInput) => {
+  if (!Number.isFinite(input.userId) || input.userId <= 0) {
+    throw new UserError(400, "userId 不合法");
+  }
+
+  const result = await prisma.$transaction(async (tx: any) => {
+    const user = await tx.user.findUnique({
+      where: { id: input.userId },
+      select: { id: true, status: true, role: true, student_id: true, phone: true, nickname: true, avatar: true, credit_score: true },
+    });
+
+    if (!user || user.status === -1) {
+      throw new UserError(404, "用户不存在");
+    }
+
+    if (user.role === Role.ADMIN) {
+      throw new UserError(403, "管理员不允许切换身份");
+    }
+
+    const nextRole =
+      user.role === Role.USER ? Role.RUNNER : user.role === Role.RUNNER ? Role.USER : null;
+
+    if (!nextRole) {
+      throw new UserError(400, "当前角色不支持切换");
+    }
+
+    const updated = await tx.user.update({
+      where: { id: input.userId },
+      data: { role: nextRole },
+      select: { id: true, student_id: true, phone: true, nickname: true, avatar: true, role: true, credit_score: true },
+    });
+
+    await tx.adminLog.create({
+      data: {
+        admin_id: input.userId,
+        action: "USER_ROLE_SWITCH",
+        target_type: "USER",
+        target_id: input.userId,
+        detail_json: toAdminLogDetail({
+          from: user.role,
+          to: nextRole,
+          at: new Date().toISOString(),
+        }),
+      },
+    });
+
+    return updated;
+  });
+
+  return result;
 };

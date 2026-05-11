@@ -129,14 +129,27 @@ export class AuthService {
 
     try {
       const passwordHash = await bcrypt.hash(password, 10);
-      const user = await prisma.user.create({
-        data: {
-          student_id,
-          phone,
-          nickname,
-          password_hash: passwordHash,
-        },
-        select: { id: true, role: true },
+      const user = await prisma.$transaction(async (tx) => {
+        const createdUser = await tx.user.create({
+          data: {
+            student_id,
+            phone,
+            nickname,
+            password_hash: passwordHash,
+          },
+          select: { id: true, role: true },
+        });
+
+        await tx.userWallet.create({
+          data: {
+            user_id: createdUser.id,
+            balance: new Prisma.Decimal(0),
+            frozen: new Prisma.Decimal(0),
+          },
+          select: { id: true },
+        });
+
+        return createdUser;
       });
 
       const token = signToken({ userId: user.id, role: user.role });
@@ -223,6 +236,32 @@ export class AuthService {
     return user;
   }
 
+  async getAuthStatus(userId: number) {
+    if (!Number.isFinite(userId) || userId <= 0) {
+      throw new AuthError(400, "userId 不合法");
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        status: true,
+        role: true,
+        auth: { select: { audit_status: true } },
+      },
+    });
+
+    if (!user || user.status === -1) {
+      throw new AuthError(404, "用户不存在");
+    }
+
+    const hasApplied = Boolean(user.auth);
+    const authStatus = hasApplied ? toUserAuthStatus(user.auth?.audit_status) : null;
+    const runnerApproved = user.role === Role.RUNNER;
+
+    return { hasApplied, authStatus, runnerApproved };
+  }
+
   async submitAuth(input: SubmitAuthInput) {
     if (!Number.isFinite(input.userId) || input.userId <= 0) {
       throw new AuthError(400, "userId 不合法");
@@ -235,37 +274,50 @@ export class AuthService {
       throw new AuthError(400, "real_name、card_image_url 为必填");
     }
 
-    const result = await prisma.$transaction(async (tx) => {
-      const user = await tx.user.findUnique({
-        where: { id: input.userId },
-        select: { id: true, status: true },
+    try {
+      const result = await prisma.$transaction(async (tx) => {
+        const user = await tx.user.findUnique({
+          where: { id: input.userId },
+          select: { id: true, status: true },
+        });
+        if (!user || user.status === -1) {
+          throw new AuthError(404, "用户不存在");
+        }
+
+        const existing = await tx.userAuth.findUnique({
+          where: { user_id: input.userId },
+          select: { id: true, audit_status: true },
+        });
+
+        if (existing && existing.audit_status === UserAuthStatus.PENDING) {
+          throw new AuthError(409, "已有待审核申请，请勿重复提交");
+        }
+        if (existing && existing.audit_status === UserAuthStatus.APPROVED) {
+          throw new AuthError(409, "已通过认证");
+        }
+
+        const auth = existing
+          ? await tx.userAuth.update({
+              where: { id: existing.id },
+              data: { real_name, card_image_url, audit_status: UserAuthStatus.PENDING },
+            })
+          : await tx.userAuth.create({
+              data: { user_id: input.userId, real_name, card_image_url, audit_status: UserAuthStatus.PENDING },
+            });
+
+        return auth;
       });
-      if (!user || user.status === -1) {
-        throw new AuthError(404, "用户不存在");
+
+      return { auth: result };
+    } catch (err) {
+      if (err instanceof Prisma.PrismaClientKnownRequestError) {
+        if (err.code === "P2002") {
+          throw new AuthError(409, "已有待审核申请，请勿重复提交");
+        }
       }
+      throw err;
+    }
 
-      const existing = await tx.userAuth.findUnique({
-        where: { user_id: input.userId },
-        select: { id: true, audit_status: true },
-      });
-
-      if (existing && existing.audit_status === UserAuthStatus.APPROVED) {
-        throw new AuthError(409, "已通过认证");
-      }
-
-      const auth = existing
-        ? await tx.userAuth.update({
-            where: { id: existing.id },
-            data: { real_name, card_image_url, audit_status: UserAuthStatus.PENDING },
-          })
-        : await tx.userAuth.create({
-            data: { user_id: input.userId, real_name, card_image_url, audit_status: UserAuthStatus.PENDING },
-          });
-
-      return auth;
-    });
-
-    return { auth: result };
   }
 
   async getAuthList(input: GetAuthListInput) {
@@ -367,6 +419,11 @@ export class AuthService {
         const authUpdated = await tx.userAuth.update({
           where: { id: auth.id },
           data: { audit_status: UserAuthStatus.APPROVED },
+        });
+
+        await tx.user.update({
+          where: { id: auth.user_id },
+          data: { role: "RUNNER" },
         });
 
         await approveRunnerAuth(tx, auth.user_id);

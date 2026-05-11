@@ -6,8 +6,8 @@ import {
   cancelOrder as cancelOrderService,
   completeOrder,
   deliverOrder,
-  getOrderList as getOrderListService,
   getOrderTrack as getOrderTrackService,
+  listOrders as listOrdersService,
   pickupOrder,
   uploadDeliveryPhoto as uploadDeliveryPhotoService,
   uploadPickupPhoto as uploadPickupPhotoService,
@@ -171,16 +171,13 @@ export const getOrderList: RequestHandler = async (req, res, next) => {
       return;
     }
 
-    const { status, page, pageSize, sortBy, sortOrder } = req.query as Partial<Record<string, unknown>>;
+    const { type, page, pageSize } = req.query as Partial<Record<string, unknown>>;
 
-    const result = await getOrderListService({
+    const result = await listOrdersService({
       userId: user.id,
-      role: String(user.role),
-      status,
+      type,
       page,
       pageSize,
-      sortBy,
-      sortOrder,
     });
 
     res.status(200).json(result);

@@ -197,3 +197,45 @@ export const recharge = async (userId: number, amountInput: string | number) => 
 
   return result;
 };
+
+export const getWalletInfo = async (userId: number) => {
+  if (!Number.isFinite(userId) || userId <= 0) {
+    throw new WalletError(400, "userId 不合法");
+  }
+
+  const wallet = await prisma.userWallet.upsert({
+    where: { user_id: userId },
+    create: { user_id: userId },
+    update: {},
+    select: { balance: true, frozen: true },
+  });
+
+  const toFiniteNumber = (value: unknown): number | null => {
+    if (value === null || value === undefined) return null;
+    if (typeof value === "number") return Number.isFinite(value) ? value : null;
+    if (typeof value === "string") {
+      const n = Number(value);
+      return Number.isFinite(n) ? n : null;
+    }
+    if (typeof value === "object") {
+      const maybeDecimal = value as { toNumber?: () => number; toString?: () => string };
+      if (typeof maybeDecimal.toNumber === "function") {
+        const n = maybeDecimal.toNumber();
+        return Number.isFinite(n) ? n : null;
+      }
+      if (typeof maybeDecimal.toString === "function") {
+        const n = Number(maybeDecimal.toString());
+        return Number.isFinite(n) ? n : null;
+      }
+    }
+    return null;
+  };
+
+  const balance = toFiniteNumber(wallet.balance);
+  const frozen = toFiniteNumber(wallet.frozen);
+  if (balance === null || frozen === null) {
+    throw new WalletError(500, "钱包金额异常");
+  }
+
+  return { balance, frozen };
+};

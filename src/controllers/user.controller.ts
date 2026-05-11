@@ -4,7 +4,11 @@ import fs from "fs";
 import path from "path";
 import sharp from "sharp";
 import { createFilename, extFromMimeType, uploadsDir } from "../middleware/upload.middleware";
-import { UserError, updateProfile as updateProfileService } from "../services/user.service";
+import {
+  switchRole as switchRoleService,
+  UserError,
+  updateProfile as updateProfileService,
+} from "../services/user.service";
 
 const prisma = new PrismaClient();
 
@@ -164,6 +168,25 @@ export const updateProfile: RequestHandler = async (req, res, next) => {
       avatar: normalizedAvatar,
     });
 
+    res.status(200).json({ user: updated });
+  } catch (err) {
+    if (err instanceof UserError) {
+      res.status(err.status).json({ error: err.message });
+      return;
+    }
+    next(err);
+  }
+};
+
+export const switchRole: RequestHandler = async (req, res, next) => {
+  try {
+    const user = req.user;
+    if (!user) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+
+    const updated = await switchRoleService({ userId: user.id });
     res.status(200).json({ user: updated });
   } catch (err) {
     if (err instanceof UserError) {

@@ -101,6 +101,25 @@ export const submitAuth: RequestHandler = async (req, res, next) => {
   }
 };
 
+export const authStatus: RequestHandler = async (req, res, next) => {
+  try {
+    const user = req.user;
+    if (!user) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+
+    const result = await authService.getAuthStatus(user.id);
+    res.status(200).json(result);
+  } catch (err) {
+    if (err instanceof AuthError) {
+      res.status(err.status).json({ error: err.message });
+      return;
+    }
+    next(err);
+  }
+};
+
 export const getAuthList: RequestHandler = async (req, res, next) => {
   try {
     const user = req.user;
