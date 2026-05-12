@@ -268,13 +268,13 @@ export const uploadDeliveryPhoto: RequestHandler = async (req, res, next) => {
     }
 
     const orderId = Number.parseInt(String(req.params.orderId ?? ""), 10);
-    const filename = getUploadedFilename(req, "photo");
-    if (!filename) {
-      res.status(400).json({ error: "No file uploaded" });
+    const url = readBodyUrl((req as any).body, ["delivery_photo_url"]);
+
+    if (!url) {
+      res.status(400).json({ error: "缺少 delivery_photo_url" });
       return;
     }
 
-    const url = `/uploads/${filename}`;
     const track = await uploadDeliveryPhotoService(orderId, user.id, url);
     res.status(200).json({ track });
   } catch (err) {

@@ -167,6 +167,7 @@ model Order {
   status        OrderStatus @default(PENDING)
   accept_time   DateTime?
   pickup_time   DateTime?
+  delivery_start_time DateTime?
   delivery_time DateTime?
   complete_time DateTime?
   eta_minutes   Int?

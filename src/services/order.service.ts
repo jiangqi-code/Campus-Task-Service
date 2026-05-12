@@ -74,25 +74,21 @@ const isListableOrderStatus = (value: unknown): value is OrderStatus => {
 
 const computeOrderProgressPercent = (input: {
   status: OrderStatus;
-  acceptTime: Date | null;
+  deliveryStartTime: Date | null;
   etaMinutes: number | null;
 }) => {
-  const { status, acceptTime, etaMinutes } = input;
+  const { status, deliveryStartTime, etaMinutes } = input;
 
   if (status === OrderStatus.COMPLETED) return 100;
-  if (status === OrderStatus.ACCEPTED) return 0;
-  if (status === OrderStatus.PICKED) return 30;
-  if (status === OrderStatus.DELIVERING) {
-    const start = acceptTime?.getTime() ?? null;
-    const eta = typeof etaMinutes === "number" && Number.isFinite(etaMinutes) && etaMinutes > 0 ? etaMinutes : null;
-    if (!start || !eta) return 0;
+  if (status !== OrderStatus.DELIVERING) return 0;
 
-    const percent = ((Date.now() - start) / (eta * 60_000)) * 100;
-    if (!Number.isFinite(percent)) return 0;
-    return Math.min(99, Math.max(0, Math.floor(percent)));
-  }
+  const start = deliveryStartTime?.getTime() ?? null;
+  const eta = typeof etaMinutes === "number" && Number.isFinite(etaMinutes) && etaMinutes > 0 ? etaMinutes : null;
+  if (!start || !eta) return 0;
 
-  return 0;
+  const percent = ((Date.now() - start) / (eta * 60_000)) * 100;
+  if (!Number.isFinite(percent)) return 0;
+  return Math.min(99, Math.max(0, Math.floor(percent)));
 };
 
 let redisClient: RedisClientType | null = null;
@@ -132,7 +128,7 @@ const toTransitionUpdate = (nextStatus: OrderStatus) => {
     return { status: nextStatus, pickup_time: now };
   }
   if (nextStatus === OrderStatus.DELIVERING) {
-    return { status: nextStatus, delivery_time: now };
+    return { status: nextStatus, delivery_start_time: now, delivery_time: now };
   }
   if (nextStatus === OrderStatus.COMPLETED) {
     return { status: nextStatus, complete_time: now };
@@ -637,6 +633,7 @@ export const getOrderDetail = async (orderId: number, userId: number, role: stri
       accept_time: true,
       taker_id: true,
       pickup_time: true,
+      delivery_start_time: true,
       delivery_time: true,
       complete_time: true,
       eta_minutes: true,
@@ -679,15 +676,18 @@ export const getOrderDetail = async (orderId: number, userId: number, role: stri
   const accept_time = order.accept_time ?? (isAcceptedOrAfter ? order.created_at : null);
   const progress_percent = computeOrderProgressPercent({
     status: order.status,
-    acceptTime: accept_time,
+    deliveryStartTime: order.delivery_start_time ?? null,
     etaMinutes: order.eta_minutes ?? null,
   });
 
   return {
     id: order.id,
+    publisher_id: order.task.publisher_id,
     accept_time,
     status: order.status,
     progress_percent,
+    eta_minutes: order.eta_minutes ?? null,
+    delivery_start_time: order.delivery_start_time ?? null,
     final_price: order.final_price ?? null,
     created_at: order.created_at,
     task: {
@@ -753,8 +753,8 @@ export const cancelOrder = async (orderId: number, userId: number) => {
       throw new OrderError(403, "无权限");
     }
 
-    if (order.status === OrderStatus.CANCELLED || order.status === OrderStatus.COMPLETED) {
-      throw new OrderError(409, "订单状态不允许取消");
+    if (order.status !== OrderStatus.PENDING && order.status !== OrderStatus.ACCEPTED) {
+      throw new OrderError(409, "订单状态必须为 PENDING 或 ACCEPTED 才能取消");
     }
 
     const settled = await tx.earning.findFirst({
@@ -780,16 +780,6 @@ export const cancelOrder = async (orderId: number, userId: number) => {
     } else if (order.status === OrderStatus.ACCEPTED) {
       refundAmount = roundMoney(amount.mul(new Prisma.Decimal("0.8")));
       platformAmount = roundMoney(amount.minus(refundAmount));
-    } else if (order.status === OrderStatus.PICKED || order.status === OrderStatus.DELIVERING) {
-      const takerId = order.taker_id;
-      if (!takerId) {
-        throw new OrderError(409, "订单未指定跑腿员");
-      }
-
-      refundAmount = roundMoney(amount.mul(new Prisma.Decimal("0.5")));
-      takerAmount = roundMoney(amount.minus(refundAmount));
-    } else {
-      throw new OrderError(409, "订单状态不允许取消");
     }
 
     const publisherWallet = await tx.userWallet.upsert({
@@ -809,38 +799,6 @@ export const cancelOrder = async (orderId: number, userId: number) => {
       throw new OrderError(409, "发布者冻结金额不足");
     }
 
-    if (takerAmount.gt(0)) {
-      const takerId = order.taker_id;
-      if (!takerId) {
-        throw new OrderError(409, "订单未指定跑腿员");
-      }
-
-      const takerWallet = await tx.userWallet.upsert({
-        where: { user_id: takerId },
-        create: { user_id: takerId },
-        update: {},
-      });
-
-      const takerBeforeTotal = takerWallet.balance.plus(takerWallet.frozen);
-      const takerAfterTotal = takerBeforeTotal.plus(takerAmount);
-
-      await tx.userWallet.update({
-        where: { id: takerWallet.id },
-        data: { balance: { increment: takerAmount } },
-      });
-
-      await tx.walletLog.create({
-        data: {
-          wallet_id: takerWallet.id,
-          type: "ORDER_CANCEL_COMPENSATE",
-          amount: takerAmount,
-          ref_order_id: order.id,
-          before_balance: takerBeforeTotal,
-          after_balance: takerAfterTotal,
-        },
-      });
-    }
-
     await tx.walletLog.create({
       data: {
         wallet_id: publisherWallet.id,
@@ -854,7 +812,7 @@ export const cancelOrder = async (orderId: number, userId: number) => {
 
     await tx.task.update({
       where: { id: order.task_id },
-      data: { status: TaskStatus.PENDING },
+      data: { status: TaskStatus.CANCELLED },
     });
 
     const nextOrder = await tx.order.update({
@@ -864,9 +822,7 @@ export const cancelOrder = async (orderId: number, userId: number) => {
 
     if (
       isTaker &&
-      (order.status === OrderStatus.ACCEPTED ||
-        order.status === OrderStatus.PICKED ||
-        order.status === OrderStatus.DELIVERING)
+      order.status === OrderStatus.ACCEPTED
     ) {
       await creditService.changeCreditScore({
         tx,
@@ -985,57 +941,99 @@ export const listOrders = async (input: ListOrdersInput) => {
     throw new OrderError(400, "type 不合法");
   }
 
-  const where: Prisma.OrderWhereInput =
-    type === "published" ? { task: { publisher_id: input.userId } } : { taker_id: input.userId };
+  if (type === "taken") {
+    const where: Prisma.OrderWhereInput = { taker_id: input.userId };
 
-  const publishedSelect = {
-    id: true,
-    status: true,
-    created_at: true,
-    taker_id: true,
-    task: { select: { pickup_address: true, delivery_address: true, fee_total: true, tip: true } },
-    taker: { select: { nickname: true } },
-  } as const;
+    const takenSelect = {
+      id: true,
+      status: true,
+      created_at: true,
+      final_price: true,
+      task_id: true,
+      task: { select: { id: true, pickup_address: true, delivery_address: true, fee_total: true, tip: true } },
+    } as const;
 
-  const takenSelect = {
-    id: true,
-    status: true,
-    created_at: true,
-    final_price: true,
-    task: { select: { pickup_address: true, delivery_address: true, fee_total: true, tip: true } },
-  } as const;
+    const [total, items] = await Promise.all([
+      prisma.order.count({ where }),
+      prisma.order.findMany({
+        where,
+        orderBy: { created_at: "desc" },
+        skip,
+        take: pageSize,
+        select: takenSelect,
+      }),
+    ]);
 
-  const select = type === "published" ? publishedSelect : takenSelect;
-
-  const [total, items] = await Promise.all([
-    prisma.order.count({ where }),
-    prisma.order.findMany({
-      where,
-      orderBy: { created_at: "desc" },
-      skip,
-      take: pageSize,
-      select,
-    }),
-  ]);
-
-  const mapped = (items as Array<any>).map((order) => {
-    const base = {
+    const mapped = (items as Array<any>).map((order) => ({
       id: order.id,
+      task_id: order.task.id,
       status: order.status,
       created_at: order.created_at,
       pickup_address: order.task.pickup_address,
       delivery_address: order.task.delivery_address,
       fee_total: order.task.fee_total,
       tip: order.task.tip ?? null,
-    };
+      final_price: order.final_price ?? null,
+    }));
 
-    if (type === "taken") {
-      return { ...base, final_price: order.final_price ?? null };
-    }
+    return { page, pageSize, total, items: mapped };
+  }
+
+  const whereTask: Prisma.TaskWhereInput = {
+    publisher_id: input.userId,
+    status: {
+      in: [
+        TaskStatus.PENDING,
+        TaskStatus.SCHEDULED,
+        TaskStatus.ACCEPTED,
+        TaskStatus.COMPLETED,
+        TaskStatus.CANCELLED,
+      ],
+    },
+  };
+
+  const [total, tasks] = await Promise.all([
+    prisma.task.count({ where: whereTask }),
+    prisma.task.findMany({
+      where: whereTask,
+      orderBy: { created_at: "desc" },
+      skip,
+      take: pageSize,
+      select: {
+        id: true,
+        status: true,
+        pickup_address: true,
+        delivery_address: true,
+        fee_total: true,
+        tip: true,
+        created_at: true,
+        orders: {
+          orderBy: { created_at: "desc" },
+          take: 1,
+          select: { id: true, status: true },
+        },
+      },
+    }),
+  ]);
+
+  const mapped = (tasks as Array<any>).map((task) => {
+    const order = Array.isArray(task.orders) && task.orders.length ? task.orders[0] : null;
+    const orderStatus = order?.status ?? null;
+    const normalizedStatus =
+      orderStatus === OrderStatus.PICKED
+        ? OrderStatus.DELIVERING
+        : orderStatus ?? (task.status === TaskStatus.SCHEDULED ? TaskStatus.PENDING : task.status);
+
     return {
-      ...base,
-      taker_id: order.taker_id ?? null,
-      taker_nickname: order.taker?.nickname ?? null,
+      id: task.id,
+      task_id: task.id,
+      status: normalizedStatus,
+      pickup_address: task.pickup_address,
+      delivery_address: task.delivery_address,
+      fee_total: task.fee_total,
+      tip: task.tip,
+      created_at: task.created_at,
+      order_id: order?.id ?? null,
     };
   });
 
@@ -1092,6 +1090,7 @@ export const getOrderList = async (input: GetOrderListInput) => {
 
   const publishedSelect = {
     id: true,
+    task_id: true,
     status: true,
     created_at: true,
     taker_id: true,
@@ -1101,6 +1100,7 @@ export const getOrderList = async (input: GetOrderListInput) => {
 
   const takenSelect = {
     id: true,
+    task_id: true,
     status: true,
     created_at: true,
     final_price: true,
@@ -1109,6 +1109,7 @@ export const getOrderList = async (input: GetOrderListInput) => {
 
   const defaultSelect = {
     id: true,
+    task_id: true,
     status: true,
     created_at: true,
     task: { select: { pickup_address: true, delivery_address: true, fee_total: true, tip: true } },
@@ -1130,6 +1131,7 @@ export const getOrderList = async (input: GetOrderListInput) => {
   const mapped = (items as Array<any>).map((order) => {
     const base = {
       id: order.id,
+      task_id: order.task_id,
       status: order.status,
       created_at: order.created_at,
       pickup_address: order.task.pickup_address,
@@ -1144,6 +1146,7 @@ export const getOrderList = async (input: GetOrderListInput) => {
     if (view === "published") {
       return {
         ...base,
+        order_id: order.id,
         taker_id: order.taker_id ?? null,
         taker_nickname: order.taker?.nickname ?? null,
       };
