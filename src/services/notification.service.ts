@@ -54,10 +54,27 @@ export class NotificationService {
 
     const io = websocketService.getIO();
 
+    // Socket.IO 推送
     io.to(`order:${order.id}`).emit("order:status", payload);
     io.to(`user:${publisherId}`).emit("order:status", payload);
     if (typeof takerId === "number") {
       io.to(`user:${takerId}`).emit("order:status", payload);
+    }
+
+    // ✅ 原生 WebSocket 推送（兼容前端）
+    try {
+      websocketService.sendToUser(publisherId, {
+        type: "ORDER_STATUS",
+        data: payload,
+      });
+      if (typeof takerId === "number") {
+        websocketService.sendToUser(takerId, {
+          type: "ORDER_STATUS",
+          data: payload,
+        });
+      }
+    } catch (err) {
+      console.error("[NotificationService] WebSocket 推送失败:", err);
     }
   }
 
@@ -77,13 +94,13 @@ export class NotificationService {
       publisherId && takerId
         ? null
         : await prisma.order.findUnique({
-            where: { id: input.orderId },
-            select: {
-              id: true,
-              taker_id: true,
-              task: { select: { publisher_id: true } },
-            },
-          });
+          where: { id: input.orderId },
+          select: {
+            id: true,
+            taker_id: true,
+            task: { select: { publisher_id: true } },
+          },
+        });
 
     const finalPublisherId = publisherId ?? order?.task.publisher_id ?? null;
     const finalTakerId = takerId ?? (typeof order?.taker_id === "number" ? order.taker_id : null);
@@ -98,6 +115,19 @@ export class NotificationService {
 
     const io = websocketService.getIO();
     io.to(`user:${finalTakerId}`).emit("order:urge", payload);
+
+    // ✅ 原生 WebSocket 推送催单消息（关键！前端需要收到 URGE 类型）
+    try {
+      websocketService.sendToUser(finalTakerId, {
+        type: "URGE",
+        data: {
+          orderId: input.orderId,
+          message: `用户催单，请尽快处理订单 #${input.orderId}`,
+        },
+      });
+    } catch (err) {
+      console.error("[NotificationService] 催单 WebSocket 推送失败:", err);
+    }
   }
 
   async notifyComplaintProcessed(input: NotifyComplaintProcessedInput) {
@@ -115,6 +145,16 @@ export class NotificationService {
 
     const io = websocketService.getIO();
     io.to(`user:${payload.runnerId}`).emit("complaint:processed", payload);
+
+    // ✅ 原生 WebSocket 推送
+    try {
+      websocketService.sendToUser(payload.runnerId, {
+        type: "COMPLAINT_PROCESSED",
+        data: payload,
+      });
+    } catch (err) {
+      console.error("[NotificationService] 投诉推送失败:", err);
+    }
   }
 }
 

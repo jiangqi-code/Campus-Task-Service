@@ -1,4 +1,5 @@
 import { PrismaClient } from "@prisma/client";
+import { MessageService } from "./message.service";
 
 export class ChatError extends Error {
   public readonly status: number;
@@ -70,6 +71,25 @@ export class ChatService {
       },
     });
 
+    // 获取发送者完整信息
+    const fromUser = await prisma.user.findUnique({
+      where: { id: fromUserId },
+      select: { nickname: true, avatar: true },
+    });
+
+    // 使用 MessageService 创建消息中心记录
+    await MessageService.create(
+      toUserId,                           // userId（接收者）
+      "chat",                             // type
+      `${fromUser?.nickname || "用户"} 发来消息`,  // title
+      message,                            // content
+      orderId,                            // relatedId
+      fromUserId,                         // senderId
+      fromUser?.nickname || "用户",       // senderName
+      fromUser?.avatar,                   // senderAvatar
+      String(orderId)                     // conversationId
+    );
+
     return chatMessage;
   }
 
@@ -103,4 +123,3 @@ export class ChatService {
     return messages;
   }
 }
-

@@ -46,48 +46,50 @@ enum ComplaintStatus {
 }
 
 model User {
-  id           Int      @id @default(autoincrement())
-  student_id   String?  @unique
-  phone        String?  @unique
+  id            Int     @id @default(autoincrement())
+  student_id    String? @unique
+  phone         String? @unique
   password_hash String?
-  nickname     String?
-  avatar       String?
-  role         Role     @default(USER)
-  status       Int      @default(1)
-  credit_score Int      @default(0)
- 
-  created_at   DateTime @default(now())
-  updated_at   DateTime @default(now()) @updatedAt
+  nickname      String?
+  avatar        String?
+  role          Role    @default(USER)
+  status        Int     @default(1)
+  credit_score  Int     @default(0)
 
-  auth         UserAuth?
-  wallet       UserWallet?
-  tasks        Task[]   @relation("TaskPublisher")
-  orders_taken Order[]  @relation("OrderTaker")
-  chat_messages_sent ChatMessage[] @relation("ChatMessageFromUser")
+  created_at DateTime @default(now())
+  updated_at DateTime @default(now()) @updatedAt
+
+  auth                   UserAuth?
+  wallet                 UserWallet?
+  tasks                  Task[]        @relation("TaskPublisher")
+  orders_taken           Order[]       @relation("OrderTaker")
+  chat_messages_sent     ChatMessage[] @relation("ChatMessageFromUser")
   chat_messages_received ChatMessage[] @relation("ChatMessageToUser")
-  reports      Report[] @relation("ReportRunner")
-  earnings     Earning[]
-  withdraws    Withdraw[] @relation("WithdrawUser")
-  withdraw_audits Withdraw[] @relation("WithdrawAuditAdmin")
-  refunds_applied Refund[] @relation("RefundUser")
-  refunds_as_runner Refund[] @relation("RefundRunner")
-  refund_audits Refund[] @relation("RefundAuditAdmin")
-  admin_logs   AdminLog[]
-  login_logs   LoginLog[]
-  complaints_created Complaint[] @relation("ComplaintCreator")
-  complaints_processed Complaint[] @relation("ComplaintAdmin")
+  reports                Report[]      @relation("ReportRunner")
+  earnings               Earning[]
+  withdraws              Withdraw[]    @relation("WithdrawUser")
+  withdraw_audits        Withdraw[]    @relation("WithdrawAuditAdmin")
+  refunds_applied        Refund[]      @relation("RefundUser")
+  refunds_as_runner      Refund[]      @relation("RefundRunner")
+  refund_audits          Refund[]      @relation("RefundAuditAdmin")
+  admin_logs             AdminLog[]
+  login_logs             LoginLog[]
+  complaints_created     Complaint[]   @relation("ComplaintCreator")
+  complaints_processed   Complaint[]   @relation("ComplaintAdmin")
+  messages               Message[]     // 接收的消息
+  messages_sent          Message[]     @relation("SenderMessages") // 发送的消息（新增）
 
   @@map("users")
 }
 
 model UserAuth {
-  id            Int      @id @default(autoincrement())
-  user_id       Int      @unique
-  real_name     String
+  id             Int      @id @default(autoincrement())
+  user_id        Int      @unique
+  real_name      String
   card_image_url String
-  audit_status  String
-  created_at    DateTime @default(now())
-  updated_at    DateTime @default(now()) @updatedAt
+  audit_status   String
+  created_at     DateTime @default(now())
+  updated_at     DateTime @default(now()) @updatedAt
 
   user User @relation(fields: [user_id], references: [id], onDelete: Cascade)
 
@@ -103,7 +105,7 @@ model UserWallet {
   created_at DateTime @default(now())
   updated_at DateTime @default(now()) @updatedAt
 
-  user User       @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  user User        @relation(fields: [user_id], references: [id], onDelete: Cascade)
   logs WalletLog[]
 
   @@index([user_id])
@@ -121,8 +123,8 @@ model WalletLog {
   created_at     DateTime @default(now())
   updated_at     DateTime @default(now()) @updatedAt
 
-  wallet UserWallet @relation(fields: [wallet_id], references: [id], onDelete: Cascade)
-  ref_order Order?  @relation("WalletLogOrder", fields: [ref_order_id], references: [id], onDelete: SetNull)
+  wallet    UserWallet @relation(fields: [wallet_id], references: [id], onDelete: Cascade)
+  ref_order Order?     @relation("WalletLogOrder", fields: [ref_order_id], references: [id], onDelete: SetNull)
 
   @@index([wallet_id])
   @@index([ref_order_id])
@@ -130,28 +132,28 @@ model WalletLog {
 }
 
 model Task {
-  id               Int       @id @default(autoincrement())
+  id               Int        @id @default(autoincrement())
   publisher_id     Int
   pickup_address   String
-  pickup_lat       Decimal?  @db.Decimal(10, 6)
-  pickup_lng       Decimal?  @db.Decimal(10, 6)
+  pickup_lat       Decimal?   @db.Decimal(10, 6)
+  pickup_lng       Decimal?   @db.Decimal(10, 6)
   delivery_address String
-  delivery_lat     Decimal?  @db.Decimal(10, 6)
-  delivery_lng     Decimal?  @db.Decimal(10, 6)
+  delivery_lat     Decimal?   @db.Decimal(10, 6)
+  delivery_lng     Decimal?   @db.Decimal(10, 6)
   type             String
-  urgency          Int       @default(0)
-  remark           String?   @db.Text
+  urgency          Int        @default(0)
+  remark           String?    @db.Text
   images_json      Json?
-  weight           String?   @db.VarChar(50)
-  size             String?   @db.VarChar(100)
-  is_fragile       Boolean?  @default(false)
-  need_inspection  Boolean?  @default(false)
-  fee_total        Decimal   @default(0) @db.Decimal(12, 2)
-  tip              Decimal   @default(0) @db.Decimal(12, 2)
+  weight           String?    @db.VarChar(50)
+  size             String?    @db.VarChar(100)
+  is_fragile       Boolean?   @default(false)
+  need_inspection  Boolean?   @default(false)
+  fee_total        Decimal    @default(0) @db.Decimal(12, 2)
+  tip              Decimal    @default(0) @db.Decimal(12, 2)
   status           TaskStatus @default(PENDING)
   scheduled_time   DateTime?
-  created_at       DateTime  @default(now())
-  updated_at       DateTime  @default(now()) @updatedAt
+  created_at       DateTime   @default(now())
+  updated_at       DateTime   @default(now()) @updatedAt
 
   publisher User    @relation("TaskPublisher", fields: [publisher_id], references: [id], onDelete: Restrict)
   orders    Order[]
@@ -161,29 +163,29 @@ model Task {
 }
 
 model Order {
-  id            Int        @id @default(autoincrement())
-  task_id       Int
-  taker_id      Int?
-  status        OrderStatus @default(PENDING)
-  accept_time   DateTime?
-  pickup_time   DateTime?
+  id                  Int         @id @default(autoincrement())
+  task_id             Int
+  taker_id            Int?
+  status              OrderStatus @default(PENDING)
+  accept_time         DateTime?
+  pickup_time         DateTime?
   delivery_start_time DateTime?
-  delivery_time DateTime?
-  complete_time DateTime?
-  eta_minutes   Int?
-  final_price   Decimal?   @db.Decimal(12, 2)
-  created_at    DateTime   @default(now())
-  updated_at    DateTime   @default(now()) @updatedAt
+  delivery_time       DateTime?
+  complete_time       DateTime?
+  eta_minutes         Int?
+  final_price         Decimal?    @db.Decimal(12, 2)
+  created_at          DateTime    @default(now())
+  updated_at          DateTime    @default(now()) @updatedAt
 
-  task   Task   @relation(fields: [task_id], references: [id], onDelete: Cascade)
-  taker  User?  @relation("OrderTaker", fields: [taker_id], references: [id], onDelete: SetNull)
-  track  OrderTrack?
-  review OrderReview?
-  reports Report[]
-  earnings Earning[]
-  wallet_logs WalletLog[] @relation("WalletLogOrder")
-  refund Refund?
-  complaint Complaint?
+  task          Task          @relation(fields: [task_id], references: [id], onDelete: Cascade)
+  taker         User?         @relation("OrderTaker", fields: [taker_id], references: [id], onDelete: SetNull)
+  track         OrderTrack?
+  review        OrderReview?
+  reports       Report[]
+  earnings      Earning[]
+  wallet_logs   WalletLog[]   @relation("WalletLogOrder")
+  refund        Refund?
+  complaint     Complaint?
   chat_messages ChatMessage[]
 
   @@index([task_id])
@@ -240,15 +242,15 @@ model OrderReview {
 }
 
 model Earning {
-  id         Int      @id @default(autoincrement())
+  id         Int       @id @default(autoincrement())
   user_id    Int
   order_id   Int?
-  amount     Decimal  @db.Decimal(12, 2)
+  amount     Decimal   @db.Decimal(12, 2)
   type       String
   status     String
   settled_at DateTime?
-  created_at DateTime @default(now())
-  updated_at DateTime @default(now()) @updatedAt
+  created_at DateTime  @default(now())
+  updated_at DateTime  @default(now()) @updatedAt
 
   user  User   @relation(fields: [user_id], references: [id], onDelete: Cascade)
   order Order? @relation(fields: [order_id], references: [id], onDelete: SetNull)
@@ -259,17 +261,17 @@ model Earning {
 }
 
 model Withdraw {
-  id             Int      @id @default(autoincrement())
-  user_id         Int
-  amount         Decimal  @db.Decimal(12, 2)
+  id             Int       @id @default(autoincrement())
+  user_id        Int
+  amount         Decimal   @db.Decimal(12, 2)
   status         String
   apply_time     DateTime?
   audit_time     DateTime?
   audit_admin_id Int?
-  created_at     DateTime @default(now())
-  updated_at     DateTime @default(now()) @updatedAt
+  created_at     DateTime  @default(now())
+  updated_at     DateTime  @default(now()) @updatedAt
 
-  user       User  @relation("WithdrawUser", fields: [user_id], references: [id], onDelete: Cascade)
+  user        User  @relation("WithdrawUser", fields: [user_id], references: [id], onDelete: Cascade)
   audit_admin User? @relation("WithdrawAuditAdmin", fields: [audit_admin_id], references: [id], onDelete: SetNull)
 
   @@index([user_id])
@@ -279,7 +281,7 @@ model Withdraw {
 
 model Refund {
   id             Int          @id @default(autoincrement())
-  order_id        Int          @unique
+  order_id       Int          @unique
   user_id        Int
   runner_id      Int
   amount         Decimal      @db.Decimal(12, 2)
@@ -304,18 +306,18 @@ model Refund {
 }
 
 model Complaint {
-  id          Int             @id @default(autoincrement())
+  id           Int             @id @default(autoincrement())
   order_id     Int             @unique
   creator_id   Int
-  reason      String          @db.Text
-  description String?         @db.Text
-  photos_json Json?
-  status      ComplaintStatus @default(PENDING)
-  admin_note  String?         @db.Text
-  admin_id    Int?
+  reason       String          @db.Text
+  description  String?         @db.Text
+  photos_json  Json?
+  status       ComplaintStatus @default(PENDING)
+  admin_note   String?         @db.Text
+  admin_id     Int?
   processed_at DateTime?
-  created_at  DateTime        @default(now())
-  updated_at  DateTime        @default(now()) @updatedAt
+  created_at   DateTime        @default(now())
+  updated_at   DateTime        @default(now()) @updatedAt
 
   order   Order @relation(fields: [order_id], references: [id], onDelete: Cascade)
   creator User  @relation("ComplaintCreator", fields: [creator_id], references: [id], onDelete: Cascade)
@@ -403,4 +405,28 @@ model ErrorLog {
   @@index([user_id])
   @@index([created_at])
   @@map("error_log")
+}
+
+model Message {
+  id              Int      @id @default(autoincrement())
+  user_id         Int      // 接收者ID
+  sender_id       Int?     // 发送者ID（新增）
+  sender_name     String?  @db.VarChar(128) // 发送者名称（新增）
+  sender_avatar   String?  @db.VarChar(512) // 发送者头像（新增）
+  conversation_id String?  @db.VarChar(64) // 会话ID，用于跳转（新增）
+  type            String   // chat / system / order
+  title           String
+  content         String   @db.Text
+  related_id      Int?     // 订单ID/任务ID
+  is_read         Boolean  @default(false)
+  created_at      DateTime @default(now())
+
+  user   User @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  sender User @relation("SenderMessages", fields: [sender_id], references: [id], onDelete: SetNull)
+
+  @@index([user_id, is_read])
+  @@index([sender_id])
+  @@index([conversation_id])
+  @@index([related_id])
+  @@map("messages")
 }

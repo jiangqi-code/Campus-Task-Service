@@ -915,9 +915,40 @@ export const urgeOrder = async (orderId: number, userId: number) => {
       }
     });
 
+    // WebSocket 推送
     notificationService
       .notifyOrderUrged({ orderId, publisherId: userId, takerId: order.taker_id, at: nowIso })
       .catch(() => { });
+
+    // ✅ 新增：写入消息中心记录（跑腿员）
+    await prisma.message.create({
+      data: {
+        user_id: order.taker_id,           // 跑腿员ID
+        sender_id: userId,                  // 用户ID（催单人）
+        sender_name: '系统',
+        type: 'system',
+        title: '催单提醒',
+        content: `用户催单，请尽快处理订单 #${orderId}`,
+        related_id: orderId,
+        conversation_id: String(orderId),
+        is_read: false,
+      },
+    });
+
+    // ✅ 新增：写入消息中心记录（用户自己，可选）
+    await prisma.message.create({
+      data: {
+        user_id: userId,                    // 用户自己
+        sender_id: userId,
+        sender_name: '系统',
+        type: 'system',
+        title: '催单成功',
+        content: `您已对订单 #${orderId} 发起催单，跑腿员将尽快处理`,
+        related_id: orderId,
+        conversation_id: String(orderId),
+        is_read: false,
+      },
+    });
 
     return { orderId, message: "催单成功" };
   } catch (err) {

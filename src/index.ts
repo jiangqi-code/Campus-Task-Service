@@ -24,6 +24,7 @@ import walletRouter from "./routes/wallet.routes";
 import earningRouter from "./routes/earning.routes";
 import runnerRouter from "./routes/runner.routes";
 import chatRouter from "./routes/chat.routes";
+import messageRouter from "./routes/message.routes";
 import { websocketService } from "./services/websocket.service";
 import { timeoutService } from "./services/timeout.service";
 import { scheduledTaskService } from "./services/scheduledTask.service";
@@ -146,6 +147,7 @@ app.use("/api/wallet", walletRouter);
 app.use("/api/earning", earningRouter);
 app.use("/api/runner", runnerRouter);
 app.use("/api/chat", chatRouter);
+app.use("/api/messages", messageRouter);
 
 const getMountPathFromRegexp = (regexp: any): string => {
   if (!regexp) return "";
