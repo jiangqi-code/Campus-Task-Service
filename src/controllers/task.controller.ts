@@ -4,6 +4,17 @@ import { sensitiveWordService } from "../services/sensitiveWord.service";
 
 const taskService = new TaskService();
 
+const toOptionalBoolean = (value: unknown) => {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value === 1;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["1", "true", "yes", "on"].includes(normalized)) return true;
+    if (["0", "false", "no", "off"].includes(normalized)) return false;
+  }
+  return null;
+};
+
 export const publish: RequestHandler = async (req, res, next) => {
   try {
     const user = req.user;
@@ -27,7 +38,7 @@ export const publish: RequestHandler = async (req, res, next) => {
       size,
       is_fragile,
       need_inspection,
-      fee_total,
+      is_urgent,
       tip,
       scheduled_time,
     } = req.body as Partial<Record<string, unknown>>;
@@ -67,7 +78,7 @@ export const publish: RequestHandler = async (req, res, next) => {
             : typeof need_inspection === "string"
               ? ["1", "true", "yes", "on"].includes(need_inspection.trim().toLowerCase())
               : null,
-      fee_total: fee_total as string | number,
+      is_urgent: toOptionalBoolean(is_urgent),
       tip: tip as string | number | null | undefined,
       scheduled_time: scheduled_time as string | number | Date | null | undefined,
     });
@@ -149,7 +160,15 @@ export const cancelTask: RequestHandler = async (req, res, next) => {
     }
 
     const taskId = Number.parseInt(String(req.params.taskId ?? ""), 10);
-    const result = await taskService.cancelTask({ taskId, publisherId: user.id });
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const cancelReasonRaw = body.cancel_reason ?? body.reason;
+    const result = await taskService.cancelTask({
+      taskId,
+      publisherId: user.id,
+      cancelReason: cancelReasonRaw === undefined || cancelReasonRaw === null
+        ? null
+        : String(cancelReasonRaw),
+    });
     res.status(200).json(result);
   } catch (err) {
     if (err instanceof TaskError) {

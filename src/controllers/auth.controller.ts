@@ -80,14 +80,24 @@ export const submitAuth: RequestHandler = async (req, res, next) => {
       return;
     }
 
-    const { real_name, card_image_url } = req.body as Partial<{
+    const { real_name, student_id, phone, id_card, dormitory, reason, card_image_url } = req.body as Partial<{
       real_name: string;
+      student_id: string;
+      phone: string;
+      id_card: string;
+      dormitory: string;
+      reason: string;
       card_image_url: string;
     }>;
 
     const result = await authService.submitAuth({
       userId: user.id,
       real_name: real_name ?? "",
+      student_id,
+      phone,
+      id_card,
+      dormitory,
+      reason,
       card_image_url: card_image_url ?? "",
     });
 
@@ -118,6 +128,14 @@ export const authStatus: RequestHandler = async (req, res, next) => {
     }
     next(err);
   }
+};
+
+export const applyRunner: RequestHandler = async (req, res, next) => {
+  return submitAuth(req, res, next);
+};
+
+export const applyStatus: RequestHandler = async (req, res, next) => {
+  return authStatus(req, res, next);
 };
 
 export const getAuthList: RequestHandler = async (req, res, next) => {

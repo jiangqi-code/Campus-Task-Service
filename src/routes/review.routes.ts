@@ -1,10 +1,11 @@
 import { Router } from "express";
 import { requireAuth } from "../middleware/auth.middleware";
-import { create } from "../controllers/review.controller";
+import { create, getGivenReviews, getReceivedReviews } from "../controllers/review.controller";
 
 const router = Router();
 
-router.post("/:orderId/review", requireAuth, create);
+router.post("/order/:orderId/review", requireAuth, create);
+router.get("/reviews/received", requireAuth, getReceivedReviews);
+router.get("/reviews/given", requireAuth, getGivenReviews);
 
 export default router;
-

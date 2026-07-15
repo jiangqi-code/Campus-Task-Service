@@ -9,7 +9,9 @@ enum OrderStatus {
 }
 import { AdminError, AdminService } from "../services/admin.service";
 import { ExportError, exportOrders as exportOrdersService } from "../services/export.service";
+import { PrismaClient } from "@prisma/client";
 
+const prisma = new PrismaClient();
 const adminService = new AdminService();
 
 const isOrderStatus = (value: unknown): value is OrderStatus => {
@@ -256,7 +258,18 @@ export const resetPassword: RequestHandler = async (req, res, next) => {
     }
 
     const userId = Number.parseInt(String(req.params.userId ?? ""), 10);
-    const result = await adminService.resetPassword({ adminId: user.id, userId });
+    const { password } = req.body as Partial<{ password: string }>;
+
+    if (!password || typeof password !== 'string' || password.trim().length < 6) {
+      res.status(400).json({ error: "密码不能少于6位" });
+      return;
+    }
+
+    const result = await adminService.resetPassword({
+      adminId: user.id,
+      userId,
+      newPassword: password.trim()
+    });
 
     res.status(200).json(result);
   } catch (err) {
@@ -608,6 +621,244 @@ export const deleteSensitiveWord: RequestHandler = async (req, res, next) => {
       res.status(err.status).json({ error: err.message });
       return;
     }
+    next(err);
+  }
+};
+
+// ==================== 解封审核接口 ====================
+
+// 获取解封申请列表
+export const getUnfreezeApplications: RequestHandler = async (req, res, next) => {
+  try {
+    const user = req.user;
+    if (!user || user.role !== 'ADMIN') {
+      res.status(403).json({ error: "无权限" });
+      return;
+    }
+
+    const page = Math.max(1, parseInt(req.query.page as string) || 1);
+    const pageSize = Math.min(100, Math.max(1, parseInt(req.query.pageSize as string) || 20));
+    const skip = (page - 1) * pageSize;
+    const status = req.query.status as string;
+
+    const where: any = {};
+    if (status && status !== 'all') {
+      where.status = status;
+    }
+
+    const [total, items] = await Promise.all([
+      prisma.unfreezeApplication.count({ where }),
+      prisma.unfreezeApplication.findMany({
+        where,
+        orderBy: { created_at: "desc" },
+        skip,
+        take: pageSize,
+        include: {
+          user: {
+            select: {
+              id: true,
+              nickname: true,
+              student_id: true,
+              phone: true,
+              status: true
+            }
+          },
+          admin: {
+            select: { id: true, nickname: true }
+          }
+        }
+      })
+    ]);
+
+    res.json({ page, pageSize, total, items });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// 处理解封申请（通过/拒绝）
+export const processUnfreezeApplication: RequestHandler = async (req, res, next) => {
+  try {
+    const user = req.user;
+    if (!user || user.role !== 'ADMIN') {
+      res.status(403).json({ error: "无权限" });
+      return;
+    }
+
+    const id = parseInt(req.params.id);
+    const { action, admin_note } = req.body as { action: "approve" | "reject"; admin_note?: string };
+
+    if (!action || (action !== "approve" && action !== "reject")) {
+      res.status(400).json({ error: "action 必须为 approve 或 reject" });
+      return;
+    }
+
+    const application = await prisma.unfreezeApplication.findUnique({ where: { id } });
+    if (!application) {
+      res.status(404).json({ error: "申请不存在" });
+      return;
+    }
+    if (application.status !== "PENDING") {
+      res.status(409).json({ error: "该申请已被处理" });
+      return;
+    }
+
+    // 更新申请状态
+    await prisma.unfreezeApplication.update({
+      where: { id },
+      data: {
+        status: action === "approve" ? "APPROVED" : "REJECTED",
+        admin_note: admin_note || null,
+        admin_id: user.id,
+        processed_at: new Date()
+      }
+    });
+
+    // 如果通过，解封用户
+    if (action === "approve") {
+      await prisma.user.update({
+        where: { id: application.user_id },
+        data: { status: 1 }
+      });
+    }
+
+    res.json({ success: true });
+  } catch (err) {
+    next(err);
+  }
+};
+export const getRefundList: RequestHandler = async (req, res, next) => {
+  try {
+    const user = req.user;
+    if (!user || user.role !== 'ADMIN') {
+      res.status(403).json({ error: "无权限" });
+      return;
+    }
+
+    const page = Math.max(1, parseInt(req.query.page as string) || 1);
+    const pageSize = Math.min(100, Math.max(1, parseInt(req.query.pageSize as string) || 20));
+    const skip = (page - 1) * pageSize;
+    const status = req.query.status as string;
+
+    const where: any = {};
+    if (status && status !== 'all') {
+      where.status = status;
+    }
+
+    const [total, items] = await Promise.all([
+      prisma.refund.count({ where }),
+      prisma.refund.findMany({
+        where,
+        orderBy: { created_at: "desc" },
+        skip,
+        take: pageSize,
+        include: {
+          user: {
+            select: { id: true, nickname: true, student_id: true, phone: true }
+          },
+          runner: {
+            select: { id: true, nickname: true, student_id: true }
+          },
+          audit_admin: {
+            select: { id: true, nickname: true }
+          }
+        }
+      })
+    ]);
+
+    res.json({ page, pageSize, total, items });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// 审核退款申请
+export const auditRefund: RequestHandler = async (req, res, next) => {
+  try {
+    const user = req.user;
+    if (!user || user.role !== 'ADMIN') {
+      res.status(403).json({ error: "无权限" });
+      return;
+    }
+
+    const refundId = parseInt(req.params.refundId);
+    const { decision, reason } = req.body as { decision: "APPROVE" | "REJECT"; reason?: string };
+
+    if (!decision || (decision !== "APPROVE" && decision !== "REJECT")) {
+      res.status(400).json({ error: "decision 必须为 APPROVE 或 REJECT" });
+      return;
+    }
+
+    const refund = await prisma.refund.findUnique({
+      where: { id: refundId },
+      include: { user: true, runner: true }
+    });
+
+    if (!refund) {
+      res.status(404).json({ error: "退款申请不存在" });
+      return;
+    }
+    if (refund.status !== "PENDING") {
+      res.status(409).json({ error: "该申请已被处理" });
+      return;
+    }
+
+    // 更新申请状态
+    await prisma.refund.update({
+      where: { id: refundId },
+      data: {
+        status: decision === "APPROVE" ? "APPROVED" : "REJECTED",
+        audit_time: new Date(),
+        audit_admin_id: user.id
+      }
+    });
+
+    // 如果通过，执行退款操作
+    if (decision === "APPROVE") {
+      await prisma.$transaction(async (tx) => {
+        // 获取用户钱包
+        let userWallet = await tx.userWallet.findUnique({
+          where: { user_id: refund.user_id }
+        });
+
+        if (!userWallet) {
+          userWallet = await tx.userWallet.create({
+            data: { user_id: refund.user_id, balance: 0, frozen: 0 }
+          });
+        }
+
+        // 获取当前实时余额（不使用 frozen，只退款到可用余额）
+        const beforeBalance = Number(userWallet.balance);
+        const refundAmount = Number(refund.amount);
+        const afterBalance = beforeBalance + refundAmount;
+
+        console.log('[auditRefund] 退款前余额:', beforeBalance);
+        console.log('[auditRefund] 退款金额:', refundAmount);
+        console.log('[auditRefund] 退款后余额:', afterBalance);
+
+        // 更新用户余额
+        await tx.userWallet.update({
+          where: { id: userWallet.id },
+          data: { balance: afterBalance }
+        });
+
+        // 记录钱包流水
+        await tx.walletLog.create({
+          data: {
+            wallet_id: userWallet.id,
+            type: "REFUND",
+            amount: refundAmount,
+            ref_order_id: refund.order_id,
+            before_balance: beforeBalance,
+            after_balance: afterBalance
+          }
+        });
+      });
+    }
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('auditRefund error:', err);
     next(err);
   }
 };

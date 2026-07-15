@@ -1,6 +1,8 @@
 // 解决找不到模块声明文件的问题
 // @ts-ignore
 import { Prisma, PrismaClient, TaskStatus } from "@prisma/client";
+import { MapError, MapService } from "./map.service";
+import { calculateDeliveryFee } from "./systemConfig.service";
 
 export class TaskError extends Error {
   public readonly status: number;
@@ -12,6 +14,7 @@ export class TaskError extends Error {
 }
 
 const prisma = new PrismaClient();
+const mapService = new MapService();
 
 type PublishTaskInput = {
   publisherId: number;
@@ -29,7 +32,7 @@ type PublishTaskInput = {
   size?: string | null;
   is_fragile?: boolean | null;
   need_inspection?: boolean | null;
-  fee_total: string | number;
+  is_urgent?: boolean | null;
   tip?: string | number | null;
   scheduled_time?: string | number | Date | null;
 };
@@ -44,6 +47,12 @@ type ListTaskInput = {
   lng?: number;
 };
 
+type CancelTaskInput = {
+  taskId: number;
+  publisherId: number;
+  cancelReason?: string | null;
+};
+
 const toOptionalDecimal = (value?: string | number | null) => {
   if (value === undefined || value === null || value === "") return undefined;
   if (typeof value === "number" && Number.isFinite(value)) return new Prisma.Decimal(value);
@@ -55,6 +64,19 @@ const toRequiredDecimal = (value: string | number) => {
   const dec = toOptionalDecimal(value);
   if (!dec) throw new TaskError(400, "金额为必填");
   return dec;
+};
+
+const roundMoney = (value: Prisma.Decimal) =>
+  value.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+
+const toOptionalCoordinateDecimal = (
+  value: string | number | null | undefined,
+  fieldName: string,
+) => {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value === "number" && Number.isFinite(value)) return new Prisma.Decimal(value);
+  if (typeof value === "string" && value.trim()) return new Prisma.Decimal(value.trim());
+  throw new TaskError(400, `${fieldName} 格式不正确`);
 };
 
 const parseIntOr = (value: unknown, fallback: number) => {
@@ -92,20 +114,22 @@ export class TaskService {
 
     const radius = Number.isFinite(input.radius) ? Math.max(0.1, Number(input.radius)) : 5;
 
-    const distance = Prisma.sql`(6371 * 2 * ASIN(SQRT(POWER(SIN(RADIANS(t.pickup_lat - ${lat}) / 2), 2) + COS(RADIANS(${lat})) * COS(RADIANS(t.pickup_lat)) * POWER(SIN(RADIANS(t.pickup_lng - ${lng}) / 2), 2))))`;
+    // 修改：计算取件点到送达点的距离
+    const distance = Prisma.sql`(6371 * 2 * ASIN(SQRT(POWER(SIN(RADIANS(t.delivery_lat - t.pickup_lat) / 2), 2) + COS(RADIANS(t.pickup_lat)) * COS(RADIANS(t.delivery_lat)) * POWER(SIN(RADIANS(t.delivery_lng - t.pickup_lng) / 2), 2)))`;
     const distanceKm = Prisma.sql`ROUND(${distance}, 2)`;
 
     const items = await prisma.$queryRaw<Array<Record<string, unknown>>>(
       Prisma.sql`
-        SELECT t.*, ${distanceKm} AS distance_km
-        FROM tasks t
-        WHERE t.status = ${TaskStatus.PENDING}
-          AND t.pickup_lat IS NOT NULL
-          AND t.pickup_lng IS NOT NULL
-        HAVING distance_km <= ${radius}
-        ORDER BY distance_km ASC, t.created_at DESC
-      `,
+      SELECT t.*, ${distanceKm} AS distance_km
+      FROM tasks t
+      WHERE t.status = ${TaskStatus.PENDING}
+        AND t.pickup_lat IS NOT NULL
+        AND t.pickup_lng IS NOT NULL
+      HAVING distance_km <= ${radius}
+      ORDER BY distance_km ASC, t.created_at DESC
+    `,
     );
+
 
     const normalizedItems = items.map((it: Record<string, unknown>) => {
       const raw = (it as { distance_km?: unknown }).distance_km;
@@ -137,7 +161,7 @@ export class TaskService {
     const pageSize = Math.min(100, Math.max(1, parseIntOr(input.pageSize, 10)));
     const skip = (page - 1) * pageSize;
 
-    const distance = Prisma.sql`(6371 * 2 * ASIN(SQRT(POWER(SIN(RADIANS(t.pickup_lat - ${lat}) / 2), 2) + COS(RADIANS(${lat})) * COS(RADIANS(t.pickup_lat)) * POWER(SIN(RADIANS(t.pickup_lng - ${lng}) / 2), 2))))`;
+    const distance = Prisma.sql`(6371 * 2 * ASIN(SQRT(POWER(SIN(RADIANS(t.delivery_lat - t.pickup_lat) / 2), 2) + COS(RADIANS(t.pickup_lat)) * COS(RADIANS(t.delivery_lat)) * POWER(SIN(RADIANS(t.delivery_lng - t.pickup_lng) / 2), 2)))`;
     const distanceKm = Prisma.sql`ROUND(${distance}, 2)`;
 
     const totalRows = await prisma.$queryRaw<Array<{ total: bigint | number }>>(
@@ -192,22 +216,51 @@ export class TaskService {
       throw new TaskError(400, "type 不能为空");
     }
 
-    const fee_total = toRequiredDecimal(input.fee_total);
-    if (!(fee_total.gt(0))) {
-      throw new TaskError(400, "fee_total 必须大于 0");
-    }
-
     const tip = toOptionalDecimal(input.tip ?? 0) ?? new Prisma.Decimal(0);
     if (tip.lt(0)) {
       throw new TaskError(400, "tip 不能小于 0");
     }
 
-    const pickup_lat = toOptionalDecimal(input.pickup_lat);
-    const pickup_lng = toOptionalDecimal(input.pickup_lng);
-    const delivery_lat = toOptionalDecimal(input.delivery_lat);
-    const delivery_lng = toOptionalDecimal(input.delivery_lng);
+    const pickup_lat = toOptionalCoordinateDecimal(input.pickup_lat, "pickup_lat");
+    const pickup_lng = toOptionalCoordinateDecimal(input.pickup_lng, "pickup_lng");
+    const delivery_lat = toOptionalCoordinateDecimal(input.delivery_lat, "delivery_lat");
+    const delivery_lng = toOptionalCoordinateDecimal(input.delivery_lng, "delivery_lng");
 
-    const urgency = input.urgency ?? 0;
+    if (!pickup_lat || !pickup_lng || !delivery_lat || !delivery_lng) {
+      throw new TaskError(400, "发布任务必须提供取件和送达坐标");
+    }
+
+    const is_urgent = typeof input.is_urgent === "boolean" ? input.is_urgent : false;
+
+    // 直接使用 Haversine 公式计算距离
+    const R = 6371; // 地球半径（公里）
+    const dLat = (delivery_lat.toNumber() - pickup_lat.toNumber()) * Math.PI / 180;
+    const dLng = (delivery_lng.toNumber() - pickup_lng.toNumber()) * Math.PI / 180;
+    const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos(pickup_lat.toNumber() * Math.PI / 180) * Math.cos(delivery_lat.toNumber() * Math.PI / 180) *
+      Math.sin(dLng / 2) * Math.sin(dLng / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    const distanceKm = R * c;
+
+    const distanceResult = { distance_km: Number(distanceKm.toFixed(2)) };
+
+    const fee_total = await calculateDeliveryFee({
+      distanceKm: distanceResult.distance_km,
+      isUrgent: is_urgent,
+    })
+      .then((result) => result.deliveryFee)
+      .catch((error: unknown) => {
+        if (error instanceof Error) {
+          throw new TaskError(500, error.message);
+        }
+        throw error;
+      });
+
+    if (!(fee_total.gte(0))) {
+      throw new TaskError(500, "计算任务费用失败");
+    }
+
+    const urgency = input.urgency ?? (is_urgent ? 1 : 0);
     const remark = input.remark ?? null;
     const weight = typeof input.weight === "string" ? input.weight.trim() : "";
     const size = typeof input.size === "string" ? input.size.trim() : "";
@@ -250,6 +303,7 @@ export class TaskService {
           size: size || null,
           is_fragile,
           need_inspection,
+          is_urgent,
           fee_total,
           tip,
           scheduled_time,
@@ -279,7 +333,7 @@ export class TaskService {
       const lat = Number(input.lat);
       const lng = Number(input.lng);
 
-      const distance = Prisma.sql`(6371 * 2 * ASIN(SQRT(POWER(SIN(RADIANS(t.pickup_lat - ${lat}) / 2), 2) + COS(RADIANS(${lat})) * COS(RADIANS(t.pickup_lat)) * POWER(SIN(RADIANS(t.pickup_lng - ${lng}) / 2), 2))))`;
+      const distance = Prisma.sql`(6371 * 2 * ASIN(SQRT(POWER(SIN(RADIANS(t.delivery_lat - t.pickup_lat) / 2), 2) + COS(RADIANS(t.pickup_lat)) * COS(RADIANS(t.delivery_lat)) * POWER(SIN(RADIANS(t.delivery_lng - t.pickup_lng) / 2), 2)))`;
       const distanceKm = Prisma.sql`ROUND(${distance}, 2)`;
 
       const totalRows = await prisma.$queryRaw<Array<{ total: bigint | number }>>(
@@ -349,13 +403,19 @@ export class TaskService {
     return task;
   }
 
-  async cancelTask(input: { taskId: number; publisherId: number }) {
+  async cancelTask(input: CancelTaskInput) {
     if (!Number.isFinite(input.taskId) || input.taskId <= 0) {
       throw new TaskError(400, "taskId 不合法");
     }
     if (!Number.isFinite(input.publisherId) || input.publisherId <= 0) {
       throw new TaskError(400, "publisherId 不合法");
     }
+
+    const cancelReason =
+      typeof input.cancelReason === "string" && input.cancelReason.trim()
+        ? input.cancelReason.trim()
+        : null;
+    const cancelledAt = new Date();
 
     const result = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       const task = await tx.task.findUnique({
@@ -376,53 +436,75 @@ export class TaskService {
         throw new TaskError(403, "无权限");
       }
       if (task.status !== TaskStatus.PENDING) {
-        throw new TaskError(409, "任务状态必须为 PENDING");
+        throw new TaskError(409, "任务状态必须为 PENDING 才能取消");
       }
 
       const amount = task.fee_total.plus(task.tip ?? new Prisma.Decimal(0));
-
-      const wallet = await tx.userWallet.upsert({
-        where: { user_id: input.publisherId },
-        create: { user_id: input.publisherId },
-        update: {},
-      });
-
-      const beforeTotal = wallet.balance.plus(wallet.frozen);
-      const afterTotal = beforeTotal;
-
       let refundAmount = new Prisma.Decimal(0);
 
-      if (wallet.frozen.gte(amount)) {
-        const unfreeze = await tx.userWallet.updateMany({
-          where: { id: wallet.id, frozen: { gte: amount } },
-          data: { frozen: { decrement: amount }, balance: { increment: amount } },
+      if (amount.gt(0)) {
+        const wallet = await tx.userWallet.upsert({
+          where: { user_id: input.publisherId },
+          create: { user_id: input.publisherId },
+          update: {},
         });
-        if (unfreeze.count !== 1) {
+
+        const beforeTotal = wallet.balance.plus(wallet.frozen);
+        const walletAfterTotal = beforeTotal;
+
+        if (wallet.frozen.gte(amount)) {
+          const unfreeze = await tx.userWallet.updateMany({
+            where: { id: wallet.id, frozen: { gte: amount } },
+            data: {
+              frozen: { decrement: amount },
+              balance: { increment: refundAmount },
+            },
+          });
+          if (unfreeze.count !== 1) {
+            throw new TaskError(409, "冻结金额不足");
+          }
+          refundAmount = amount;
+
+          await tx.walletLog.create({
+            data: {
+              wallet_id: wallet.id,
+              type: "TASK_CANCEL_REFUND",
+              amount: refundAmount,
+              ref_order_id: null,
+              before_balance: beforeTotal,
+              after_balance: walletAfterTotal,
+            },
+          });
+        } else if (wallet.frozen.gt(0)) {
           throw new TaskError(409, "冻结金额不足");
         }
-
-        await tx.walletLog.create({
-          data: {
-            wallet_id: wallet.id,
-            type: "TASK_CANCEL_REFUND",
-            amount,
-            ref_order_id: null,
-            before_balance: beforeTotal,
-            after_balance: afterTotal,
-          },
-        });
-
-        refundAmount = amount;
-      } else if (wallet.frozen.gt(0)) {
-        throw new TaskError(409, "冻结金额不足");
       }
 
       const updated = await tx.task.update({
         where: { id: task.id },
-        data: { status: TaskStatus.CANCELLED },
+        data: {
+          status: TaskStatus.CANCELLED,
+          cancelled_at: cancelledAt,
+          cancel_reason: cancelReason,
+        },
       });
 
-      return { task: updated, refundAmount };
+      await tx.message.create({
+        data: {
+          user_id: task.publisher_id,
+          sender_id: 6,
+          sender_name: "系统",
+          sender_avatar: "",
+          type: "system",
+          title: "任务已取消",
+          content: `任务 #${task.id} 已取消${refundAmount.gt(0) ? `，已退回 ${refundAmount.toFixed(2)} 元` : ""}${cancelReason ? `。原因：${cancelReason}` : ""}`,
+          related_id: task.id,
+          conversation_id: `task:${task.id}`,
+          is_read: false,
+        },
+      });
+
+      return { task: updated, refundAmount, platformAmount: new Prisma.Decimal(0) };
     });
 
     return result;

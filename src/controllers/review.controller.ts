@@ -32,3 +32,52 @@ export const create: RequestHandler = async (req, res, next) => {
   }
 };
 
+export const getReceivedReviews: RequestHandler = async (req, res, next) => {
+  try {
+    const user = req.user;
+    if (!user) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+
+    const result = await reviewService.getReceivedReviews({
+      userId: user.id,
+      page: req.query.page,
+      pageSize: req.query.pageSize,
+      rating: req.query.rating,
+    });
+
+    res.status(200).json(result);
+  } catch (err) {
+    if (err instanceof ReviewError) {
+      res.status(err.status).json({ error: err.message });
+      return;
+    }
+    next(err);
+  }
+};
+
+export const getGivenReviews: RequestHandler = async (req, res, next) => {
+  try {
+    const user = req.user;
+    if (!user) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+
+    const result = await reviewService.getGivenReviews({
+      userId: user.id,
+      page: req.query.page,
+      pageSize: req.query.pageSize,
+      rating: req.query.rating,
+    });
+
+    res.status(200).json(result);
+  } catch (err) {
+    if (err instanceof ReviewError) {
+      res.status(err.status).json({ error: err.message });
+      return;
+    }
+    next(err);
+  }
+};

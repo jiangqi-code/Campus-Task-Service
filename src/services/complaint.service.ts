@@ -38,6 +38,7 @@ type ListComplaintsInput = {
   page?: unknown;
   pageSize?: unknown;
   status?: unknown;
+  type?: unknown;
 };
 
 type ProcessComplaintInput = {
@@ -161,8 +162,11 @@ export class ComplaintService {
       throw new ComplaintError(400, "status 不合法");
     }
 
+    const type = typeof input.type === "string" && input.type.trim() ? input.type.trim() : null;
+
     const where: Prisma.ComplaintWhereInput = {
       ...(status ? { status } : undefined),
+      ...(type ? { reason: { contains: type } } : undefined),
     };
 
     const [total, items] = await Promise.all([
@@ -267,4 +271,3 @@ export class ComplaintService {
 }
 
 export const complaintService = new ComplaintService();
-

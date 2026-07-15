@@ -214,6 +214,10 @@ export class WebsocketService {
     io.to(`user:${Math.trunc(userId)}`).emit(event.trim(), payload);
   }
 
+  sendToUser(userId: number, payload: unknown) {
+    this.pushToUser(userId, "message", payload);
+  }
+
   pushToOrder(orderId: number, event: string, payload: unknown) {
     if (!Number.isFinite(orderId) || orderId <= 0) {
       throw new Error("Invalid orderId");

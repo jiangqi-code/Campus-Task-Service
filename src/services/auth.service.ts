@@ -37,6 +37,11 @@ export const UserAuthStatus = {
 type SubmitAuthInput = {
   userId: number;
   real_name: string;
+  student_id?: string;
+  phone?: string;
+  id_card?: string;
+  dormitory?: string;
+  reason?: string;
   card_image_url: string;
 };
 
@@ -247,7 +252,23 @@ export class AuthService {
         id: true,
         status: true,
         role: true,
-        auth: { select: { audit_status: true } },
+        auth: {
+          select: {
+            audit_status: true,
+            real_name: true,
+            card_image_url: true,
+            student_id: true,
+            phone: true,
+            id_card: true,
+            dormitory: true,
+            reason: true,
+            admin_id: true,
+            processed_at: true,
+            admin: { select: { id: true, student_id: true, phone: true, nickname: true, role: true } },
+            created_at: true,
+            updated_at: true,
+          },
+        },
       },
     });
 
@@ -259,7 +280,7 @@ export class AuthService {
     const authStatus = hasApplied ? toUserAuthStatus(user.auth?.audit_status) : null;
     const runnerApproved = user.role === Role.RUNNER;
 
-    return { hasApplied, authStatus, runnerApproved };
+    return { hasApplied, authStatus, status: authStatus, runnerApproved, auth: user.auth ?? null };
   }
 
   async submitAuth(input: SubmitAuthInput) {
@@ -269,6 +290,11 @@ export class AuthService {
 
     const real_name = input.real_name?.trim();
     const card_image_url = input.card_image_url?.trim();
+    const student_id = typeof input.student_id === "string" ? input.student_id.trim() : "";
+    const phone = typeof input.phone === "string" ? input.phone.trim() : "";
+    const id_card = typeof input.id_card === "string" ? input.id_card.trim() : "";
+    const dormitory = typeof input.dormitory === "string" ? input.dormitory.trim() : "";
+    const reason = typeof input.reason === "string" ? input.reason.trim() : "";
 
     if (!real_name || !card_image_url) {
       throw new AuthError(400, "real_name、card_image_url 为必填");
@@ -289,20 +315,42 @@ export class AuthService {
           select: { id: true, audit_status: true },
         });
 
-        if (existing && existing.audit_status === UserAuthStatus.PENDING) {
+        const existingStatus = toUserAuthStatus(existing?.audit_status) ?? null;
+        if (existing && existingStatus === UserAuthStatus.PENDING) {
           throw new AuthError(409, "已有待审核申请，请勿重复提交");
         }
-        if (existing && existing.audit_status === UserAuthStatus.APPROVED) {
+        if (existing && existingStatus === UserAuthStatus.APPROVED) {
           throw new AuthError(409, "已通过认证");
         }
 
         const auth = existing
           ? await tx.userAuth.update({
               where: { id: existing.id },
-              data: { real_name, card_image_url, audit_status: UserAuthStatus.PENDING },
+              data: {
+                real_name,
+                card_image_url,
+                audit_status: UserAuthStatus.PENDING,
+                student_id: student_id || null,
+                phone: phone || null,
+                id_card: id_card || null,
+                dormitory: dormitory || null,
+                reason: reason || null,
+                admin_id: null,
+                processed_at: null,
+              },
             })
           : await tx.userAuth.create({
-              data: { user_id: input.userId, real_name, card_image_url, audit_status: UserAuthStatus.PENDING },
+              data: {
+                user_id: input.userId,
+                real_name,
+                card_image_url,
+                audit_status: UserAuthStatus.PENDING,
+                student_id: student_id || null,
+                phone: phone || null,
+                id_card: id_card || null,
+                dormitory: dormitory || null,
+                reason: reason || null,
+              },
             });
 
         return auth;
@@ -359,10 +407,20 @@ export class AuthService {
           user_id: true,
           real_name: true,
           card_image_url: true,
+          student_id: true,
+          phone: true,
+          id_card: true,
+          dormitory: true,
+          reason: true,
           audit_status: true,
+          admin_id: true,
+          processed_at: true,
           created_at: true,
           updated_at: true,
           user: {
+            select: { id: true, student_id: true, phone: true, nickname: true, role: true, status: true },
+          },
+          admin: {
             select: { id: true, student_id: true, phone: true, nickname: true, role: true, status: true },
           },
         },
@@ -418,7 +476,7 @@ export class AuthService {
       if (action === "approve") {
         const authUpdated = await tx.userAuth.update({
           where: { id: auth.id },
-          data: { audit_status: UserAuthStatus.APPROVED },
+          data: { audit_status: UserAuthStatus.APPROVED, admin_id: input.adminId, processed_at: now },
         });
 
         await tx.user.update({
@@ -448,7 +506,7 @@ export class AuthService {
 
       const authUpdated = await tx.userAuth.update({
         where: { id: auth.id },
-        data: { audit_status: UserAuthStatus.REJECTED },
+        data: { audit_status: UserAuthStatus.REJECTED, admin_id: input.adminId, processed_at: now },
       });
 
       await tx.adminLog.create({

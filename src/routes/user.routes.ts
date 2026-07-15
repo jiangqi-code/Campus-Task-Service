@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { getUserInfo, switchRole, updateProfile, uploadAvatar } from "../controllers/user.controller";
+import { getUserInfo, switchRole, updateProfile, uploadAvatar, applyUnfreeze } from "../controllers/user.controller";
 import { requireAuth } from "../middleware/auth.middleware";
 import { uploadAvatar as uploadAvatarMiddleware } from "../middleware/upload.middleware";
 
@@ -9,5 +9,6 @@ router.post("/avatar", requireAuth, uploadAvatarMiddleware, uploadAvatar);
 router.put("/profile", requireAuth, updateProfile);
 router.put("/switch-role", requireAuth, switchRole);
 router.get("/:userId", requireAuth, getUserInfo);
+router.post("/apply-unfreeze", requireAuth, applyUnfreeze);
 
 export default router;

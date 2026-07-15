@@ -25,6 +25,11 @@ import earningRouter from "./routes/earning.routes";
 import runnerRouter from "./routes/runner.routes";
 import chatRouter from "./routes/chat.routes";
 import messageRouter from "./routes/message.routes";
+import configRouter from "./routes/config.routes";
+import mapRouter from "./routes/map.routes";
+import creditRouter from "./routes/credit.routes";
+import pricingRouter from "./routes/pricing.routes";
+import adminPricingRouter from "./routes/adminPricing.routes";
 import { websocketService } from "./services/websocket.service";
 import { timeoutService } from "./services/timeout.service";
 import { scheduledTaskService } from "./services/scheduledTask.service";
@@ -133,12 +138,13 @@ app.get("/health", healthHandler);
 app.use("/api/auth", authRouter);
 app.use("/api/task", taskRouter);
 app.use("/api/order", orderRouter);
-app.use("/api/order", reviewRouter);
+app.use("/api", reviewRouter);
 app.use("/api/order", refundRouter);
 app.use("/api/order", reportRouter);
 app.use("/api/order", contactRouter);
 app.use("/api/order", complaintRouter);
 app.use("/api/admin", adminRouter);
+app.use("/api/admin", authRouter);
 app.use("/api/withdraw", withdrawRouter);
 app.use("/api/upload", uploadRouter);
 app.use("/api/user", userRouter);
@@ -148,6 +154,12 @@ app.use("/api/earning", earningRouter);
 app.use("/api/runner", runnerRouter);
 app.use("/api/chat", chatRouter);
 app.use("/api/messages", messageRouter);
+app.use("/api/config", configRouter);
+app.use("/api/map", mapRouter);
+app.use("/api/credit", creditRouter);
+app.use("/api/pricing", pricingRouter);
+app.use("/api/admin/pricing", adminPricingRouter);
+
 
 const getMountPathFromRegexp = (regexp: any): string => {
   if (!regexp) return "";
@@ -277,8 +289,9 @@ app.use(errorHandler);
 const server = createServer(app);
 websocketService.start(server);
 if (process.env.NODE_ENV !== "test") {
-  timeoutService.start();
+  // 注册系统定时任务
   scheduledTaskService.start();
+  timeoutService.start();
 }
 
 server.listen(port, () => {

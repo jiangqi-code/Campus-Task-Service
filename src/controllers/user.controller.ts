@@ -1,5 +1,5 @@
 import type { RequestHandler } from "express";
-import { PrismaClient } from "@prisma/client";
+import { PrismaClient, Role } from "@prisma/client";
 import fs from "fs";
 import path from "path";
 import sharp from "sharp";
@@ -55,7 +55,7 @@ const deleteOldAvatarIfAny = async (oldAvatarUrl: string | null | undefined) => 
   const absPath = toSafeUploadAbsPath(rel);
   if (!absPath) return;
 
-  await fs.promises.unlink(absPath).catch(() => {});
+  await fs.promises.unlink(absPath).catch(() => { });
 };
 
 export const uploadAvatar: RequestHandler = async (req, res, next) => {
@@ -115,7 +115,7 @@ export const uploadAvatar: RequestHandler = async (req, res, next) => {
     res.status(201).json({ url });
   } catch (err) {
     if (createdAbsPath) {
-      await fs.promises.unlink(createdAbsPath).catch(() => {});
+      await fs.promises.unlink(createdAbsPath).catch(() => { });
     }
     next(err);
   }
@@ -187,6 +187,31 @@ export const switchRole: RequestHandler = async (req, res, next) => {
       return;
     }
 
+    const dbUser = await prisma.user.findUnique({
+      where: { id: user.id },
+      select: { role: true, status: true },
+    });
+    if (!dbUser || dbUser.status === -1) {
+      res.status(404).json({ error: "用户不存在" });
+      return;
+    }
+
+    const nextRole =
+      dbUser.role === Role.USER ? Role.RUNNER : dbUser.role === Role.RUNNER ? Role.USER : null;
+
+    if (nextRole === Role.RUNNER) {
+      const auth = await prisma.userAuth.findUnique({
+        where: { user_id: user.id },
+        select: { audit_status: true },
+      });
+
+      const status = (auth?.audit_status ?? "").trim().toUpperCase();
+      if (status !== "APPROVED") {
+        res.status(403).json({ error: "请先申请并通过跑腿员审核" });
+        return;
+      }
+    }
+
     const updated = await switchRoleService({ userId: user.id });
     res.status(200).json({ user: updated });
   } catch (err) {
@@ -220,6 +245,75 @@ export const getUserInfo: RequestHandler = async (req, res, next) => {
       res.status(err.status).json({ error: err.message });
       return;
     }
+    next(err);
+  }
+};
+
+// 用户申请解封
+export const applyUnfreeze: RequestHandler = async (req, res, next) => {
+  try {
+    const user = req.user;
+    if (!user) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+
+    // ✅ 直接从数据库查询最新状态，而不是用 req.user 中的缓存
+    const dbUser = await prisma.user.findUnique({
+      where: { id: user.id },
+      select: { status: true }
+    });
+
+    if (!dbUser) {
+      res.status(404).json({ error: "用户不存在" });
+      return;
+    }
+
+    // 检查用户是否真的是冻结状态
+    if (dbUser.status !== 0) {
+      res.status(400).json({ error: "账号未被冻结，无需申请解封" });
+      return;
+    }
+
+    const { reason, contact } = req.body as { reason?: string; contact?: string };
+
+    if (!reason || typeof reason !== 'string' || !reason.trim()) {
+      res.status(400).json({ error: "请填写申请理由" });
+      return;
+    }
+
+    // 检查是否已有未处理的申请
+    const existing = await prisma.unfreezeApplication.findFirst({
+      where: {
+        user_id: user.id,
+        status: "PENDING"
+      }
+    });
+
+    if (existing) {
+      res.status(409).json({ error: "已有正在处理中的解封申请，请耐心等待" });
+      return;
+    }
+
+    const application = await prisma.unfreezeApplication.create({
+      data: {
+        user_id: user.id,
+        reason: reason.trim(),
+        contact: contact?.trim() || null,
+        status: "PENDING"
+      }
+    });
+
+    res.status(201).json({
+      success: true,
+      message: "解封申请已提交，管理员将在1-3个工作日内处理",
+      application: {
+        id: application.id,
+        status: application.status,
+        created_at: application.created_at
+      }
+    });
+  } catch (err) {
     next(err);
   }
 };

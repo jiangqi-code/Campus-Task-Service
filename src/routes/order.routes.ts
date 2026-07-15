@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { acceptTask, cancelOrder, complete, confirmOrder, deliver, detail, getOrderList, getTrack, pickup, uploadDeliveryPhoto, uploadPickupPhoto, urge } from "../controllers/order.controller";
+import { acceptTask, cancelOrder, complete, confirmOrder, deliver, detail, getOrderList, getTrack, pickup, uploadDeliveryPhoto, uploadPickupPhoto, urge, applyRefund } from "../controllers/order.controller";
 import { requireAuth } from "../middleware/auth.middleware";
 import { antiBrushAcceptTask, limitOrderCancel } from "../middleware/rateLimit.middleware";
 import { requireRole } from "../middleware/role.middleware";
@@ -19,5 +19,6 @@ router.post("/confirm/:orderId", requireAuth, confirmOrder);
 router.post("/:orderId/urge", requireAuth, urge);
 router.get("/:orderId/track", requireAuth, getTrack);
 router.get("/:id", requireAuth, detail);
+router.post("/:orderId/refund", requireAuth, applyRefund);
 
 export default router;

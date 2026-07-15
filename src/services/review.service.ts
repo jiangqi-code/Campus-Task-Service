@@ -22,6 +22,22 @@ const parseIntOr = (value: unknown, fallback: number) => {
   return fallback;
 };
 
+const parseRatingFilter = (value: unknown) => {
+  if (value === undefined || value === null || value === "") return null;
+
+  const rating = parseIntOr(value, 0);
+  if (!Number.isFinite(rating) || rating < 1 || rating > 5) {
+    throw new ReviewError(400, "rating 必须为 1-5 整数");
+  }
+
+  return rating;
+};
+
+const normalizeTags = (value: Prisma.JsonValue | null | undefined) => {
+  if (!Array.isArray(value)) return [] as string[];
+  return value.map((item) => String(item)).filter((item) => item.trim().length > 0);
+};
+
 export class ReviewService {
   async createOrderReview(input: {
     orderId: number;
@@ -104,5 +120,143 @@ export class ReviewService {
     });
 
     return created;
+  }
+
+  async getReceivedReviews(input: {
+    userId: number;
+    page?: unknown;
+    pageSize?: unknown;
+    rating?: unknown;
+  }) {
+    if (!Number.isFinite(input.userId) || input.userId <= 0) {
+      throw new ReviewError(400, "userId 不合法");
+    }
+
+    const page = Math.max(1, parseIntOr(input.page, 1));
+    const pageSize = Math.min(100, Math.max(1, parseIntOr(input.pageSize, 10)));
+    const skip = (page - 1) * pageSize;
+    const rating = parseRatingFilter(input.rating);
+
+    const where: Prisma.OrderReviewWhereInput = {
+      ...(rating ? { rating } : undefined),
+      order: {
+        taker_id: input.userId,
+      },
+    };
+
+    const [total, reviews] = await Promise.all([
+      prisma.orderReview.count({ where }),
+      prisma.orderReview.findMany({
+        where,
+        orderBy: { created_at: "desc" },
+        skip,
+        take: pageSize,
+        select: {
+          id: true,
+          rating: true,
+          tags_json: true,
+          comment: true,
+          created_at: true,
+          order: {
+            select: {
+              id: true,
+              status: true,
+              task: {
+                select: {
+                  publisher: {
+                    select: {
+                      nickname: true,
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      }),
+    ]);
+
+    return {
+      list: reviews.map((review) => ({
+        id: review.id,
+        rating: review.rating,
+        tags: normalizeTags(review.tags_json),
+        content: review.comment ?? "",
+        images: [],
+        fromUserName: review.order.task.publisher.nickname ?? "",
+        orderId: review.order.id,
+        orderStatus: review.order.status,
+        createdAt: review.created_at,
+      })),
+      total,
+    };
+  }
+
+  async getGivenReviews(input: {
+    userId: number;
+    page?: unknown;
+    pageSize?: unknown;
+    rating?: unknown;
+  }) {
+    if (!Number.isFinite(input.userId) || input.userId <= 0) {
+      throw new ReviewError(400, "userId 不合法");
+    }
+
+    const page = Math.max(1, parseIntOr(input.page, 1));
+    const pageSize = Math.min(100, Math.max(1, parseIntOr(input.pageSize, 10)));
+    const skip = (page - 1) * pageSize;
+    const rating = parseRatingFilter(input.rating);
+
+    const where: Prisma.OrderReviewWhereInput = {
+      ...(rating ? { rating } : undefined),
+      order: {
+        task: {
+          publisher_id: input.userId,
+        },
+      },
+    };
+
+    const [total, reviews] = await Promise.all([
+      prisma.orderReview.count({ where }),
+      prisma.orderReview.findMany({
+        where,
+        orderBy: { created_at: "desc" },
+        skip,
+        take: pageSize,
+        select: {
+          id: true,
+          rating: true,
+          tags_json: true,
+          comment: true,
+          created_at: true,
+          order: {
+            select: {
+              id: true,
+              status: true,
+              taker: {
+                select: {
+                  nickname: true,
+                },
+              },
+            },
+          },
+        },
+      }),
+    ]);
+
+    return {
+      list: reviews.map((review) => ({
+        id: review.id,
+        rating: review.rating,
+        tags: normalizeTags(review.tags_json),
+        content: review.comment ?? "",
+        images: [],
+        toUserName: review.order.taker?.nickname ?? "",
+        orderId: review.order.id,
+        orderStatus: review.order.status,
+        createdAt: review.created_at,
+      })),
+      total,
+    };
   }
 }

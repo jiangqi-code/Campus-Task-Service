@@ -1,37 +1,48 @@
 import cron, { type ScheduledTask } from "node-cron";
 import { PrismaClient, TaskStatus } from "@prisma/client";
+import { runDailyPricingAnalysis } from "./pricing.service";
 
 const prisma = new PrismaClient();
 
 export class ScheduledTaskService {
-  private task: ScheduledTask | null = null;
-  private running = false;
+  private tasks: ScheduledTask[] = [];
+  private runningDueTasks = false;
+  private runningPricingAnalysis = false;
 
   start() {
-    if (this.task) return;
+    if (this.tasks.length) return;
 
-    this.task = cron.schedule("* * * * *", () => {
-      this.runOnce().catch((err) => {
+    const dueTask = cron.schedule("* * * * *", () => {
+      this.runDueTasksOnce().catch((err) => {
         const message = err instanceof Error ? err.message : String(err);
-        console.error("[scheduledTask.cron] runOnce failed:", message);
+        console.error("[scheduledTask.cron] runDueTasksOnce failed:", message);
       });
     });
+    dueTask.start();
+    this.tasks.push(dueTask);
 
-    this.task.start();
+    const pricingTask = cron.schedule("0 2 * * *", () => {
+      this.runPricingAnalysisOnce().catch((err) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error("[scheduledTask.cron] runPricingAnalysisOnce failed:", message);
+      });
+    });
+    pricingTask.start();
+    this.tasks.push(pricingTask);
   }
 
   stop() {
-    this.task?.stop();
-    this.task = null;
+    for (const task of this.tasks) task.stop();
+    this.tasks = [];
   }
 
-  private async runOnce() {
-    if (this.running) return;
-    this.running = true;
+  private async runDueTasksOnce() {
+    if (this.runningDueTasks) return;
+    this.runningDueTasks = true;
     try {
       await this.processDueTasks();
     } finally {
-      this.running = false;
+      this.runningDueTasks = false;
     }
   }
 
@@ -41,6 +52,24 @@ export class ScheduledTaskService {
       where: { status: TaskStatus.SCHEDULED, scheduled_time: { lte: now } },
       data: { status: TaskStatus.PENDING },
     });
+  }
+
+  private async runPricingAnalysisOnce() {
+    if (this.runningPricingAnalysis) return;
+    this.runningPricingAnalysis = true;
+    try {
+      const created = await runDailyPricingAnalysis();
+      if (created) {
+        console.log("[scheduledTask.pricing] created recommendation:", {
+          model_version: created.model_version,
+          sample_size: created.sample_size,
+        });
+      } else {
+        console.log("[scheduledTask.pricing] skipped: not enough data");
+      }
+    } finally {
+      this.runningPricingAnalysis = false;
+    }
   }
 }
 

@@ -13,6 +13,12 @@ type TimeoutConfig = {
   pickedNoCompleteMinutes: number;
 };
 
+const timeoutDefaults = [
+  { key: "timeout_pending_task_minutes", value: "120" },
+  { key: "timeout_accepted_no_pickup_minutes", value: "20" },
+  { key: "timeout_picked_no_complete_minutes", value: "40" },
+] as const;
+
 const toPositiveIntOrNull = (value: unknown) => {
   if (typeof value === "number" && Number.isFinite(value)) {
     const n = Math.trunc(value);
@@ -37,9 +43,15 @@ export class TimeoutService {
   private running = false;
 
   start() {
-    if (this.task) return;
+    if (this.task) {
+      console.log('[timeout] 定时任务已在运行');
+      return;
+    }
 
-    this.task = cron.schedule("*/5 * * * *", () => {
+    console.log('[timeout] 正在启动定时任务，每分钟执行一次');
+
+    this.task = cron.schedule("* * * * *", () => {
+      console.log('[timeout] 定时任务触发 -', new Date().toISOString());
       this.runOnce().catch((err) => {
         const message = err instanceof Error ? err.message : String(err);
         console.error("[timeout.cron] runOnce failed:", message);
@@ -47,19 +59,28 @@ export class TimeoutService {
     });
 
     this.task.start();
+    console.log('[timeout] 定时任务已启动');
+
+    // 延迟 3 秒后手动触发一次（用于测试）
+    setTimeout(() => {
+      console.log('[timeout] 手动触发测试');
+      this.runOnce().catch(console.error);
+    }, 3000);
   }
 
   stop() {
     this.task?.stop();
     this.task = null;
+    console.log('[timeout] 定时任务已停止');
   }
 
   private async loadConfig(): Promise<TimeoutConfig> {
-    const keys = [
-      "timeout_pending_task_minutes",
-      "timeout_accepted_no_pickup_minutes",
-      "timeout_picked_no_complete_minutes",
-    ] as const;
+    const keys = timeoutDefaults.map((item) => item.key) as Array<(typeof timeoutDefaults)[number]["key"]>;
+
+    await prisma.systemConfig.createMany({
+      data: timeoutDefaults.map((item) => ({ key: item.key, value: item.value })),
+      skipDuplicates: true,
+    });
 
     const rows = await prisma.systemConfig.findMany({
       where: { key: { in: [...keys] } },
@@ -70,35 +91,66 @@ export class TimeoutService {
     const map = new Map<string, string>(normalizedRows.map((r) => [r.key, r.value]));
 
     return {
-      pendingTaskMinutes: toPositiveIntOrNull(map.get("timeout_pending_task_minutes")) ?? 30,
+      pendingTaskMinutes: toPositiveIntOrNull(map.get("timeout_pending_task_minutes")) ?? 120,
       acceptedNoPickupMinutes: toPositiveIntOrNull(map.get("timeout_accepted_no_pickup_minutes")) ?? 20,
       pickedNoCompleteMinutes: toPositiveIntOrNull(map.get("timeout_picked_no_complete_minutes")) ?? 40,
     };
   }
 
   private async runOnce() {
-    if (this.running) return;
+    console.log('[timeout] runOnce 开始执行');
+    if (this.running) {
+      console.log('[timeout] runOnce 正在运行中，跳过');
+      return;
+    }
     this.running = true;
     try {
       const config = await this.loadConfig();
+      console.log('[timeout] 配置:', config);
       await this.processPendingTaskTimeout(config.pendingTaskMinutes);
       await this.processAcceptedNoPickupTimeout(config.acceptedNoPickupMinutes);
       await this.processPickedNoCompleteTimeout(config.pickedNoCompleteMinutes);
+      console.log('[timeout] runOnce 执行完成');
     } finally {
       this.running = false;
     }
   }
 
   private async processPendingTaskTimeout(timeoutMinutes: number) {
+    console.log("[timeout.pendingTask] 开始检查待接单超时任务", {
+      timeoutMinutes,
+      now: new Date().toISOString(),
+    });
+
+    if (!Number.isFinite(timeoutMinutes) || timeoutMinutes <= 0) {
+      console.warn("[timeout.pendingTask] timeoutMinutes 无效，跳过执行", { timeoutMinutes });
+      return;
+    }
+
     const cutoff = minutesAgo(timeoutMinutes);
     const candidates = await prisma.task.findMany({
       where: { status: TaskStatus.PENDING, created_at: { lte: cutoff } },
-      select: { id: true },
+      select: { id: true, created_at: true, publisher_id: true, status: true },
       take: 200,
       orderBy: { created_at: "asc" },
     });
 
+    console.log("[timeout.pendingTask] 查询完成", {
+      timeoutMinutes,
+      cutoff: cutoff.toISOString(),
+      candidateCount: candidates.length,
+      candidateTaskIds: candidates.map((item) => item.id),
+    });
+
     for (const row of candidates) {
+      console.log("[timeout.pendingTask] 开始处理任务", {
+        taskId: row.id,
+        publisherId: row.publisher_id,
+        taskStatus: row.status,
+        createdAt: row.created_at.toISOString(),
+        cutoff: cutoff.toISOString(),
+      });
+
       await prisma
         .$transaction(async (tx: Prisma.TransactionClient) => {
           const task = await tx.task.findUnique({
@@ -112,9 +164,25 @@ export class TimeoutService {
               tip: true,
             },
           });
-          if (!task) return;
-          if (task.status !== TaskStatus.PENDING) return;
-          if (task.created_at.getTime() > cutoff.getTime()) return;
+          if (!task) {
+            console.log("[timeout.pendingTask] 任务不存在，跳过", { taskId: row.id });
+            return;
+          }
+          if (task.status !== TaskStatus.PENDING) {
+            console.log("[timeout.pendingTask] 任务状态已变化，跳过", {
+              taskId: task.id,
+              currentStatus: task.status,
+            });
+            return;
+          }
+          if (task.created_at.getTime() > cutoff.getTime()) {
+            console.log("[timeout.pendingTask] 任务未达到超时阈值，跳过", {
+              taskId: task.id,
+              createdAt: task.created_at.toISOString(),
+              cutoff: cutoff.toISOString(),
+            });
+            return;
+          }
 
           const amount = task.fee_total.plus(task.tip ?? new Prisma.Decimal(0));
 
@@ -125,11 +193,8 @@ export class TimeoutService {
           });
 
           const beforeTotal = wallet.balance.plus(wallet.frozen);
-          const afterTotal = beforeTotal;
-
-          if (amount.gt(0) && wallet.frozen.gt(0) && wallet.frozen.lt(amount)) {
-            throw new Error("发布者冻结金额不足，无法全额退款");
-          }
+          let refundAmount = new Prisma.Decimal(0);
+          let refundSkippedReason: string | null = null;
 
           if (wallet.frozen.gte(amount) && amount.gt(0)) {
             const moved = await tx.userWallet.updateMany({
@@ -137,22 +202,63 @@ export class TimeoutService {
               data: { frozen: { decrement: amount }, balance: { increment: amount } },
             });
             if (moved.count === 1) {
-              await tx.walletLog.create({
-                data: {
-                  wallet_id: wallet.id,
-                  type: "TASK_TIMEOUT_CANCEL_REFUND",
-                  amount,
-                  ref_order_id: null,
-                  before_balance: beforeTotal,
-                  after_balance: afterTotal,
-                },
-              });
+              refundAmount = amount;
+            } else {
+              refundSkippedReason = "wallet_update_failed";
             }
+          } else if (amount.lte(0)) {
+            refundSkippedReason = "refund_amount_not_positive";
+          } else {
+            refundSkippedReason = "insufficient_frozen_balance";
           }
+
+          const afterTotal = beforeTotal;
+
+          await tx.walletLog.create({
+            data: {
+              wallet_id: wallet.id,
+              type: "TASK_TIMEOUT_CANCEL_REFUND",
+              amount: refundAmount,
+              ref_order_id: null,
+              before_balance: beforeTotal,
+              after_balance: afterTotal,
+            },
+          });
+
+          const cancelledOrders = await tx.order.updateMany({
+            where: { task_id: task.id, status: { not: OrderStatus.CANCELLED } },
+            data: { status: OrderStatus.CANCELLED },
+          });
 
           await tx.task.update({
             where: { id: task.id },
             data: { status: TaskStatus.CANCELLED },
+          });
+
+          await tx.message.create({
+            data: {
+              user_id: task.publisher_id,
+              sender_id: 6,
+              sender_name: "系统",
+              sender_avatar: "",
+              type: "system",
+              title: "任务超时已自动取消",
+              content: `任务 #${task.id} 发布后 ${timeoutMinutes} 分钟内无人接单，系统已自动取消${refundAmount.gt(0) ? "，冻结金额已原路退回钱包余额" : ""}`,
+              related_id: task.id,
+              conversation_id: `task:${task.id}`,
+              is_read: false,
+            },
+          });
+
+          console.log("[timeout.pendingTask] 任务处理完成", {
+            taskId: task.id,
+            timeoutMinutes,
+            cutoff: cutoff.toISOString(),
+            refundAmount: refundAmount.toString(),
+            frozenBefore: wallet.frozen.toString(),
+            expectedRefundAmount: amount.toString(),
+            refundSkippedReason,
+            cancelledOrderCount: cancelledOrders.count,
           });
         })
         .catch((err: unknown) => {
@@ -163,6 +269,7 @@ export class TimeoutService {
   }
 
   private async processAcceptedNoPickupTimeout(timeoutMinutes: number) {
+    console.log('[timeout] 检查已接单未取件超时...');
     const cutoff = minutesAgo(timeoutMinutes);
 
     const candidates = await prisma.order.findMany({
@@ -174,6 +281,8 @@ export class TimeoutService {
       take: 200,
       orderBy: [{ accept_time: "asc" }, { created_at: "asc" }],
     });
+
+    console.log('[timeout] 找到已接单未取件超时订单:', candidates.length);
 
     for (const row of candidates) {
       await prisma
@@ -252,7 +361,9 @@ export class TimeoutService {
               fromStatus: OrderStatus.ACCEPTED,
               toStatus: OrderStatus.CANCELLED,
             })
-            .catch(() => {});
+            .catch(() => { });
+
+          console.log('[timeout] 已接单未取件订单已取消:', order.id);
         })
         .catch((err: unknown) => {
           const message = err instanceof Error ? err.message : String(err);
@@ -262,6 +373,7 @@ export class TimeoutService {
   }
 
   private async processPickedNoCompleteTimeout(timeoutMinutes: number) {
+    console.log('[timeout] 检查配送中超时...');
     const cutoff = minutesAgo(timeoutMinutes);
     const cooldownMinutes = 30;
     const cooldownCutoff = minutesAgo(cooldownMinutes);
@@ -275,6 +387,8 @@ export class TimeoutService {
       take: 200,
       orderBy: { pickup_time: "asc" },
     });
+
+    console.log('[timeout] 找到配送中超时订单:', candidates.length);
 
     for (const row of candidates) {
       await prisma
@@ -342,6 +456,8 @@ export class TimeoutService {
           io.to(`order:${order.id}`).emit("order:remind", payload);
           io.to(`user:${order.task.publisher_id}`).emit("order:remind", payload);
           io.to(`user:${order.taker_id}`).emit("order:remind", payload);
+
+          console.log('[timeout] 配送超时提醒已发送:', order.id);
         })
         .catch((err: unknown) => {
           const message = err instanceof Error ? err.message : String(err);

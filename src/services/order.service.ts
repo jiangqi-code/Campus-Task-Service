@@ -34,6 +34,31 @@ export class OrderError extends Error {
 
 const prisma = new PrismaClient();
 
+const toFiniteNumberOrNull = (value: unknown): number | null => {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (typeof value === "string") {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  }
+  if (typeof value === "object") {
+    const maybeDecimal = value as { toNumber?: () => number };
+    if (typeof maybeDecimal.toNumber === "function") {
+      const n = maybeDecimal.toNumber();
+      return Number.isFinite(n) ? n : null;
+    }
+  }
+  return null;
+};
+
+const computeTimeSlot = (date: Date) => {
+  const hour = date.getHours();
+  if (hour < 6) return "00-06";
+  if (hour < 12) return "06-12";
+  if (hour < 18) return "12-18";
+  return "18-24";
+};
+
 type GetOrderListInput = {
   userId: number;
   role: string;
@@ -145,7 +170,29 @@ const transitionOrderStatus = async (orderId: number, userId: number, nextStatus
   }
 
   const result = await prisma.$transaction(async (tx) => {
-    const order = await tx.order.findUnique({ where: { id: orderId } });
+    const order = await tx.order.findUnique({
+      where: { id: orderId },
+      select: {
+        id: true,
+        status: true,
+        taker_id: true,
+        accept_time: true,
+        created_at: true,
+        eta_minutes: true,
+        final_price: true,
+        task: {
+          select: {
+            id: true,
+            created_at: true,
+            urgency: true,
+            pickup_lat: true,
+            pickup_lng: true,
+            delivery_lat: true,
+            delivery_lng: true,
+          },
+        },
+      },
+    });
     if (!order) {
       throw new OrderError(404, "订单不存在");
     }
@@ -183,6 +230,68 @@ const transitionOrderStatus = async (orderId: number, userId: number, nextStatus
         userId,
         delta: 2 + (onTime ? 1 : 0),
       });
+
+      const [aiEnabledRow, modelVersionRow] = await Promise.all([
+        tx.systemConfig.findUnique({ where: { key: "ai_pricing_enabled" }, select: { value: true } }),
+        tx.systemConfig.findUnique({ where: { key: "pricing_model_version" }, select: { value: true } }),
+      ]);
+
+      const aiEnabled = (() => {
+        const v = String(aiEnabledRow?.value ?? "false").trim().toLowerCase();
+        return v === "true" || v === "1" || v === "yes" || v === "on";
+      })();
+      const pricingModelVersion = (() => {
+        const raw = String(modelVersionRow?.value ?? "").trim();
+        if (!raw) return null;
+        const n = Number.parseInt(raw, 10);
+        return Number.isFinite(n) && n >= 0 ? Math.trunc(n) : null;
+      })();
+
+      const pickupLat = toFiniteNumberOrNull((order.task as any)?.pickup_lat);
+      const pickupLng = toFiniteNumberOrNull((order.task as any)?.pickup_lng);
+      const deliveryLat = toFiniteNumberOrNull((order.task as any)?.delivery_lat);
+      const deliveryLng = toFiniteNumberOrNull((order.task as any)?.delivery_lng);
+      const distanceKm =
+        pickupLat === null || pickupLng === null || deliveryLat === null || deliveryLng === null
+          ? null
+          : Number(haversineDistanceKm(pickupLat, pickupLng, deliveryLat, deliveryLng).toFixed(3));
+
+      const acceptLatencySeconds =
+        order.accept_time && (order.task as any)?.created_at
+          ? Math.max(0, Math.floor((order.accept_time.getTime() - (order.task as any).created_at.getTime()) / 1000))
+          : null;
+
+      const timeSlot = computeTimeSlot(completeTime);
+      const urgency = typeof (order.task as any)?.urgency === "number" ? (order.task as any).urgency : 0;
+
+      await tx.pricingLog.upsert({
+        where: { order_id: order.id },
+        update: {
+          task_id: (order.task as any)?.id ?? null,
+          distance_km: distanceKm === null ? null : new Prisma.Decimal(distanceKm),
+          time_slot: timeSlot,
+          weather: null,
+          urgency,
+          deal_price: updated.final_price ?? order.final_price ?? null,
+          accept_latency_seconds: acceptLatencySeconds,
+          ai_enabled: aiEnabled,
+          pricing_model_version: pricingModelVersion,
+          created_at: completeTime,
+        },
+        create: {
+          order_id: order.id,
+          task_id: (order.task as any)?.id ?? null,
+          distance_km: distanceKm === null ? null : new Prisma.Decimal(distanceKm),
+          time_slot: timeSlot,
+          weather: null,
+          urgency,
+          deal_price: updated.final_price ?? order.final_price ?? null,
+          accept_latency_seconds: acceptLatencySeconds,
+          ai_enabled: aiEnabled,
+          pricing_model_version: pricingModelVersion,
+          created_at: completeTime,
+        },
+      });
     }
 
     return { order, updated };
@@ -219,7 +328,29 @@ const transitionOrderStatusWithTrack = async (
       : undefined;
 
   const result = await prisma.$transaction(async (tx) => {
-    const order = await tx.order.findUnique({ where: { id: orderId } });
+    const order = await tx.order.findUnique({
+      where: { id: orderId },
+      select: {
+        id: true,
+        status: true,
+        taker_id: true,
+        accept_time: true,
+        created_at: true,
+        eta_minutes: true,
+        final_price: true,
+        task: {
+          select: {
+            id: true,
+            created_at: true,
+            urgency: true,
+            pickup_lat: true,
+            pickup_lng: true,
+            delivery_lat: true,
+            delivery_lng: true,
+          },
+        },
+      },
+    });
     if (!order) {
       throw new OrderError(404, "订单不存在");
     }
@@ -264,6 +395,68 @@ const transitionOrderStatusWithTrack = async (
         tx,
         userId,
         delta: 2 + (onTime ? 1 : 0),
+      });
+
+      const [aiEnabledRow, modelVersionRow] = await Promise.all([
+        tx.systemConfig.findUnique({ where: { key: "ai_pricing_enabled" }, select: { value: true } }),
+        tx.systemConfig.findUnique({ where: { key: "pricing_model_version" }, select: { value: true } }),
+      ]);
+
+      const aiEnabled = (() => {
+        const v = String(aiEnabledRow?.value ?? "false").trim().toLowerCase();
+        return v === "true" || v === "1" || v === "yes" || v === "on";
+      })();
+      const pricingModelVersion = (() => {
+        const raw = String(modelVersionRow?.value ?? "").trim();
+        if (!raw) return null;
+        const n = Number.parseInt(raw, 10);
+        return Number.isFinite(n) && n >= 0 ? Math.trunc(n) : null;
+      })();
+
+      const pickupLat = toFiniteNumberOrNull((order.task as any)?.pickup_lat);
+      const pickupLng = toFiniteNumberOrNull((order.task as any)?.pickup_lng);
+      const deliveryLat = toFiniteNumberOrNull((order.task as any)?.delivery_lat);
+      const deliveryLng = toFiniteNumberOrNull((order.task as any)?.delivery_lng);
+      const distanceKm =
+        pickupLat === null || pickupLng === null || deliveryLat === null || deliveryLng === null
+          ? null
+          : Number(haversineDistanceKm(pickupLat, pickupLng, deliveryLat, deliveryLng).toFixed(3));
+
+      const acceptLatencySeconds =
+        order.accept_time && (order.task as any)?.created_at
+          ? Math.max(0, Math.floor((order.accept_time.getTime() - (order.task as any).created_at.getTime()) / 1000))
+          : null;
+
+      const timeSlot = computeTimeSlot(completeTime);
+      const urgency = typeof (order.task as any)?.urgency === "number" ? (order.task as any).urgency : 0;
+
+      await tx.pricingLog.upsert({
+        where: { order_id: order.id },
+        update: {
+          task_id: (order.task as any)?.id ?? null,
+          distance_km: distanceKm === null ? null : new Prisma.Decimal(distanceKm),
+          time_slot: timeSlot,
+          weather: null,
+          urgency,
+          deal_price: updated.final_price ?? order.final_price ?? null,
+          accept_latency_seconds: acceptLatencySeconds,
+          ai_enabled: aiEnabled,
+          pricing_model_version: pricingModelVersion,
+          created_at: completeTime,
+        },
+        create: {
+          order_id: order.id,
+          task_id: (order.task as any)?.id ?? null,
+          distance_km: distanceKm === null ? null : new Prisma.Decimal(distanceKm),
+          time_slot: timeSlot,
+          weather: null,
+          urgency,
+          deal_price: updated.final_price ?? order.final_price ?? null,
+          accept_latency_seconds: acceptLatencySeconds,
+          ai_enabled: aiEnabled,
+          pricing_model_version: pricingModelVersion,
+          created_at: completeTime,
+        },
       });
     }
 
@@ -644,6 +837,10 @@ export const getOrderDetail = async (orderId: number, userId: number, role: stri
           fee_total: true,
           tip: true,
           publisher_id: true,
+          pickup_lat: true,      // 新增
+          pickup_lng: true,      // 新增
+          delivery_lat: true,    // 新增
+          delivery_lng: true,    // 新增
           publisher: { select: { id: true, nickname: true } },
         },
       },
@@ -690,6 +887,10 @@ export const getOrderDetail = async (orderId: number, userId: number, role: stri
     delivery_start_time: order.delivery_start_time ?? null,
     final_price: order.final_price ?? null,
     created_at: order.created_at,
+    pickup_lat: order.task.pickup_lat,      // 新增
+    pickup_lng: order.task.pickup_lng,      // 新增
+    delivery_lat: order.task.delivery_lat,  // 新增
+    delivery_lng: order.task.delivery_lng,  // 新增
     task: {
       pickup_address: order.task.pickup_address,
       delivery_address: order.task.delivery_address,
@@ -747,14 +948,12 @@ export const cancelOrder = async (orderId: number, userId: number) => {
 
     fromStatus = order.status;
 
-    const isPublisher = order.task.publisher_id === userId;
-    const isTaker = order.taker_id === userId;
-    if (!isPublisher && !isTaker) {
+    if (order.task.publisher_id !== userId) {
       throw new OrderError(403, "无权限");
     }
 
-    if (order.status !== OrderStatus.PENDING && order.status !== OrderStatus.ACCEPTED) {
-      throw new OrderError(409, "订单状态必须为 PENDING 或 ACCEPTED 才能取消");
+    if (order.status !== OrderStatus.ACCEPTED) {
+      throw new OrderError(409, "订单状态必须为 ACCEPTED 才能取消");
     }
 
     const settled = await tx.earning.findFirst({
@@ -773,14 +972,9 @@ export const cancelOrder = async (orderId: number, userId: number) => {
 
     let refundAmount = amount;
     let platformAmount = new Prisma.Decimal(0);
-    let takerAmount = new Prisma.Decimal(0);
-
-    if (order.status === OrderStatus.PENDING) {
-      refundAmount = amount;
-    } else if (order.status === OrderStatus.ACCEPTED) {
-      refundAmount = roundMoney(amount.mul(new Prisma.Decimal("0.8")));
-      platformAmount = roundMoney(amount.minus(refundAmount));
-    }
+    const takerAmount = new Prisma.Decimal(0);
+    refundAmount = roundMoney(amount.mul(new Prisma.Decimal("0.8")));
+    platformAmount = roundMoney(amount.minus(refundAmount));
 
     const publisherWallet = await tx.userWallet.upsert({
       where: { user_id: order.task.publisher_id },
@@ -820,15 +1014,8 @@ export const cancelOrder = async (orderId: number, userId: number) => {
       data: { status: OrderStatus.CANCELLED },
     });
 
-    if (
-      isTaker &&
-      order.status === OrderStatus.ACCEPTED
-    ) {
-      await creditService.changeCreditScore({
-        tx,
-        userId,
-        delta: -10,
-      });
+    if (order.taker_id && order.taker_id !== order.task.publisher_id) {
+      await creditService.changeCreditScore({ tx, userId: order.taker_id, delta: -10 });
     }
 
     return { order: nextOrder, refundAmount, platformAmount, takerAmount };
@@ -1007,20 +1194,25 @@ export const listOrders = async (input: ListOrdersInput) => {
       final_price: order.final_price ?? null,
     }));
 
-    return { page, pageSize, total, items: mapped };
+    // 查询哪些订单已有退款申请
+    const orderIds = mapped.map(o => o.id);
+    const refunds = await prisma.refund.findMany({
+      where: { order_id: { in: orderIds } },
+      select: { order_id: true }
+    });
+    const refundedOrderIds = new Set(refunds.map(r => r.order_id));
+
+    const itemsWithRefundStatus = mapped.map(o => ({
+      ...o,
+      hasRefunded: refundedOrderIds.has(o.id)
+    }));
+
+    return { page, pageSize, total, items: itemsWithRefundStatus };
   }
 
+  // published 类型直接从 tasks 表查询，确保新发布但尚未生成订单的任务也能展示
   const whereTask: Prisma.TaskWhereInput = {
     publisher_id: input.userId,
-    status: {
-      in: [
-        TaskStatus.PENDING,
-        TaskStatus.SCHEDULED,
-        TaskStatus.ACCEPTED,
-        TaskStatus.COMPLETED,
-        TaskStatus.CANCELLED,
-      ],
-    },
   };
 
   const [total, tasks] = await Promise.all([
@@ -1038,10 +1230,16 @@ export const listOrders = async (input: ListOrdersInput) => {
         fee_total: true,
         tip: true,
         created_at: true,
+        publisher_id: true,
         orders: {
           orderBy: { created_at: "desc" },
           take: 1,
-          select: { id: true, status: true },
+          select: {
+            id: true,
+            status: true,
+            taker_id: true,
+            taker: { select: { nickname: true } },
+          },
         },
       },
     }),
@@ -1064,11 +1262,27 @@ export const listOrders = async (input: ListOrdersInput) => {
       fee_total: task.fee_total,
       tip: task.tip,
       created_at: task.created_at,
+      publisher_id: task.publisher_id,
       order_id: order?.id ?? null,
+      taker_id: order?.taker_id ?? null,
+      taker_nickname: order?.taker?.nickname ?? null,
     };
   });
 
-  return { page, pageSize, total, items: mapped };
+  // 查询哪些订单已有退款申请
+  const orderIds = mapped.map(o => o.order_id).filter(id => id !== null);
+  const refunds = await prisma.refund.findMany({
+    where: { order_id: { in: orderIds } },
+    select: { order_id: true }
+  });
+  const refundedOrderIds = new Set(refunds.map(r => r.order_id));
+
+  const itemsWithRefundStatus = mapped.map(o => ({
+    ...o,
+    hasRefunded: o.order_id ? refundedOrderIds.has(o.order_id) : false
+  }));
+
+  return { page, pageSize, total, items: itemsWithRefundStatus };
 };
 
 export const getOrderList = async (input: GetOrderListInput) => {
@@ -1125,7 +1339,7 @@ export const getOrderList = async (input: GetOrderListInput) => {
     status: true,
     created_at: true,
     taker_id: true,
-    task: { select: { pickup_address: true, delivery_address: true, fee_total: true, tip: true } },
+    task: { select: { pickup_address: true, delivery_address: true, fee_total: true, tip: true, publisher_id: true } },
     taker: { select: { nickname: true } },
   } as const;
 
@@ -1178,6 +1392,7 @@ export const getOrderList = async (input: GetOrderListInput) => {
       return {
         ...base,
         order_id: order.id,
+        publisher_id: order.task.publisher_id,
         taker_id: order.taker_id ?? null,
         taker_nickname: order.taker?.nickname ?? null,
       };

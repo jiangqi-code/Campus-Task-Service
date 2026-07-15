@@ -174,12 +174,18 @@ export const getUserInfo = async (input: GetUserInfoInput) => {
 
   const user = await prisma.user.findUnique({
     where: { id: input.userId },
-    select: { id: true, nickname: true, phone: true, avatar: true, status: true },
+    select: { id: true, nickname: true, phone: true, avatar: true, status: true, credit_score: true },
   });
 
   if (!user || user.status === -1) {
     throw new UserError(404, "用户不存在");
   }
 
-  return { id: user.id, nickname: user.nickname, phone: user.phone, avatar: user.avatar };
+  return {
+    id: user.id,
+    nickname: user.nickname,
+    phone: user.phone,
+    avatar: user.avatar,
+    credit_score: user.credit_score ?? 0,
+  };
 };

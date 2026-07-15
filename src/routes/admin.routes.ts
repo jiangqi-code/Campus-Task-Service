@@ -1,72 +1,92 @@
 import { Router } from "express";
 import { requireAuth } from "../middleware/auth.middleware";
 import { requireRole } from "../middleware/role.middleware";
-import { auditAuth, getAuthList } from "../controllers/auth.controller";
-import { getComplaintList, processComplaint } from "../controllers/complaint.controller";
-import { auditRefund, getRefundList } from "../controllers/refund.controller";
-import { getReportList } from "../controllers/report.controller";
+import { getRefundList, auditRefund } from "../controllers/admin.controller";
 import {
-  addSensitiveWord,
-  auditWithdraw,
-  cancelOrder,
-  deleteSensitiveWord,
-  deleteTask,
-  deleteUser,
-  freezeUser,
-  getConfig,
   getDashboard,
   getHeatmapData,
-  getErrorLogs,
-  getLoginLogs,
-  getLogs,
-  getSensitiveWords,
-  exportOrders,
-  orderList,
-  resetPassword,
-  setOrderStatus,
-  taskList,
-  updateConfig,
   userList,
+  getLogs,
+  getLoginLogs,
+  getErrorLogs,
+  freezeUser,
+  deleteUser,
+  resetPassword,
+  taskList,
+  deleteTask,
+  cancelOrder,
+  setOrderStatus,
+  orderList,
+  exportOrders,
   withdrawList,
+  auditWithdraw,
+  getConfig,
+  updateConfig,
+  getSensitiveWords,
+  addSensitiveWord,
+  deleteSensitiveWord,
+  getUnfreezeApplications,
+  processUnfreezeApplication,
 } from "../controllers/admin.controller";
+import { getAuthList, auditAuth } from "../controllers/auth.controller";
+import { getAdminReportList, processAdminReport } from "../controllers/report.controller";
+import { getAdminComplaintList, processAdminComplaint } from "../controllers/complaint.controller";
 
 const router = Router();
+router.get("/auth/list", requireAuth, getAuthList);
+router.post("/auth/:authId/audit", requireAuth, auditAuth);
+router.get("/runner/apply/list", requireAuth, getAuthList);
 
-router.get("/dashboard", requireAuth, requireRole("ADMIN"), getDashboard);
-router.get("/heatmap", requireAuth, requireRole("ADMIN"), getHeatmapData);
-router.get("/logs", requireAuth, requireRole("ADMIN"), getLogs);
-router.get("/logs/login", requireAuth, requireRole("ADMIN"), getLoginLogs);
-router.get("/logs/error", requireAuth, requireRole("ADMIN"), getErrorLogs);
-router.get("/config", requireAuth, requireRole("ADMIN"), getConfig);
-router.put("/config/:key", requireAuth, requireRole("ADMIN"), updateConfig);
-router.get("/sensitive-words", requireAuth, requireRole("ADMIN"), getSensitiveWords);
-router.post("/sensitive-words", requireAuth, requireRole("ADMIN"), addSensitiveWord);
-router.delete("/sensitive-words/:id", requireAuth, requireRole("ADMIN"), deleteSensitiveWord);
-router.get("/users", requireAuth, requireRole("ADMIN"), userList);
-router.put("/users/:userId/freeze", requireAuth, requireRole("ADMIN"), freezeUser);
-router.put("/users/:userId/reset-password", requireAuth, requireRole("ADMIN"), resetPassword);
-router.delete("/users/:userId", requireAuth, requireRole("ADMIN"), deleteUser);
 
-router.get("/tasks", requireAuth, requireRole("ADMIN"), taskList);
-router.delete("/tasks/:taskId", requireAuth, requireRole("ADMIN"), deleteTask);
+router.get("/refund/list", requireAuth, getRefundList);
+router.post("/refund/:refundId/audit", requireAuth, auditRefund);
 
-router.get("/orders/export", requireAuth, requireRole("ADMIN"), exportOrders);
-router.get("/orders", requireAuth, requireRole("ADMIN"), orderList);
-router.put("/order/:orderId/cancel", requireAuth, requireRole("ADMIN"), cancelOrder);
-router.put("/order/:orderId/status", requireAuth, requireRole("ADMIN"), setOrderStatus);
+router.get("/reports", requireAuth, requireRole("ADMIN"), getAdminReportList);
+router.put("/reports/:id/process", requireAuth, requireRole("ADMIN"), processAdminReport);
 
-router.get("/withdraw/list", requireAuth, requireRole("ADMIN"), withdrawList);
-router.post("/withdraw/:withdrawId/audit", requireAuth, requireRole("ADMIN"), auditWithdraw);
+router.get("/complaints", requireAuth, requireRole("ADMIN"), getAdminComplaintList);
+router.put("/complaints/:id/process", requireAuth, requireRole("ADMIN"), processAdminComplaint);
 
-router.get("/refund/list", requireAuth, requireRole("ADMIN"), getRefundList);
-router.post("/refund/:refundId/audit", requireAuth, requireRole("ADMIN"), auditRefund);
+// 仪表盘
+router.get("/dashboard", requireAuth, getDashboard);
+router.get("/heatmap", requireAuth, getHeatmapData);
 
-router.get("/auth/list", requireAuth, requireRole("ADMIN"), getAuthList);
-router.post("/auth/:authId/audit", requireAuth, requireRole("ADMIN"), auditAuth);
+// 日志
+router.get("/logs", requireAuth, getLogs);
+router.get("/logs/login", requireAuth, getLoginLogs);
+router.get("/logs/error", requireAuth, getErrorLogs);
 
-router.get("/reports", requireAuth, requireRole("ADMIN"), getReportList);
+// 用户管理
+router.get("/users", requireAuth, userList);
+router.put("/users/:userId/freeze", requireAuth, freezeUser);
+router.delete("/users/:userId", requireAuth, deleteUser);
+router.put("/users/:userId/reset-password", requireAuth, resetPassword);
 
-router.get("/complaints", requireAuth, requireRole("ADMIN"), getComplaintList);
-router.put("/complaints/:complaintId/process", requireAuth, requireRole("ADMIN"), processComplaint);
+// 解封审核（新增）
+router.get("/unfreeze-applications", requireAuth, getUnfreezeApplications);
+router.post("/unfreeze-applications/:id/process", requireAuth, processUnfreezeApplication);
+
+// 任务管理
+router.get("/tasks", requireAuth, taskList);
+router.delete("/tasks/:taskId", requireAuth, deleteTask);
+
+// 订单管理
+router.get("/orders", requireAuth, orderList);
+router.put("/order/:orderId/cancel", requireAuth, cancelOrder);
+router.put("/order/:orderId/status", requireAuth, setOrderStatus);
+router.get("/orders/export", requireAuth, exportOrders);
+
+// 提现审核
+router.get("/withdraw/list", requireAuth, withdrawList);
+router.post("/withdraw/:withdrawId/audit", requireAuth, auditWithdraw);
+
+// 系统配置
+router.get("/config", requireAuth, getConfig);
+router.put("/config/:key", requireAuth, updateConfig);
+
+// 敏感词管理
+router.get("/sensitive-words", requireAuth, getSensitiveWords);
+router.post("/sensitive-words", requireAuth, addSensitiveWord);
+router.delete("/sensitive-words/:id", requireAuth, deleteSensitiveWord);
 
 export default router;

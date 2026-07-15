@@ -50,3 +50,58 @@ export const getReportList: RequestHandler = async (req, res, next) => {
   }
 };
 
+export const getAdminReportList: RequestHandler = async (req, res, next) => {
+  try {
+    const user = req.user;
+    if (!user) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+
+    const { status, page, pageSize } = req.query as Partial<Record<string, unknown>>;
+    const result = await reportService.listReportsForAdmin({ status, page, pageSize });
+
+    const items = result.items.map((report) => {
+      const order = report.order;
+      const reported = order?.task?.publisher ?? null;
+      const reporter = report.runner ?? null;
+      return { ...report, order, reporter, reported };
+    });
+
+    res.status(200).json({ ...result, items });
+  } catch (err) {
+    if (err instanceof ReportError) {
+      res.status(err.status).json({ error: err.message });
+      return;
+    }
+    next(err);
+  }
+};
+
+export const processAdminReport: RequestHandler = async (req, res, next) => {
+  try {
+    const user = req.user;
+    if (!user) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+
+    const reportId = Number.parseInt(String(req.params.id ?? ""), 10);
+    const body = req.body as { result?: unknown; action?: unknown } | undefined;
+
+    const report = await reportService.processReportByAdmin({
+      adminId: user.id,
+      reportId,
+      result: body?.result,
+      action: body?.action,
+    });
+
+    res.status(200).json({ report });
+  } catch (err) {
+    if (err instanceof ReportError) {
+      res.status(err.status).json({ error: err.message });
+      return;
+    }
+    next(err);
+  }
+};

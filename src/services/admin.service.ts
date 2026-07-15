@@ -84,6 +84,7 @@ type DeleteUserInput = {
 type ResetPasswordInput = {
   adminId: number;
   userId: number;
+  newPassword: string;  // 添加这行
 };
 
 type ProcessComplaintInput = {
@@ -426,10 +427,10 @@ export class AdminService {
         : Promise.resolve([]),
       topUserIds.length
         ? prisma.order.groupBy({
-            by: ["taker_id"],
-            where: { status: OrderStatus.COMPLETED, taker_id: { in: topUserIds } },
-            _count: { _all: true },
-          })
+          by: ["taker_id"],
+          where: { status: OrderStatus.COMPLETED, taker_id: { in: topUserIds } },
+          _count: { _all: true },
+        })
         : Promise.resolve([]),
     ]);
 
@@ -476,8 +477,10 @@ export class AdminService {
       throw new AdminError(400, "start_date 不能大于 end_date");
     }
 
-    const where: Prisma.OrderWhereInput = {
-      task: { pickup_lat: { not: null }, pickup_lng: { not: null } },
+    // 查询所有有坐标的任务（不聚合，每个任务独立返回）
+    const where: Prisma.TaskWhereInput = {
+      pickup_lat: { not: null },
+      pickup_lng: { not: null },
       ...((startDate || endDate) && {
         created_at: {
           ...(startDate ? { gte: startDate } : undefined),
@@ -486,53 +489,23 @@ export class AdminService {
       }),
     };
 
-    const grouped = await prisma.order.groupBy({
-      by: ["task_id"],
-      where,
-      _count: { _all: true },
-    });
-
-    if (!grouped.length) return [];
-
-    const taskIds = grouped.map((r) => r.task_id);
-
     const tasks = await prisma.task.findMany({
-      where: { id: { in: taskIds } },
-      select: { id: true, pickup_lat: true, pickup_lng: true },
+      where,
+      select: {
+        id: true,
+        pickup_address: true,
+        pickup_lat: true,
+        pickup_lng: true,
+      },
     });
 
-    const taskIdToCoords = new Map<number, { lat: Prisma.Decimal; lng: Prisma.Decimal }>();
-    for (const t of tasks) {
-      if (!t.pickup_lat || !t.pickup_lng) continue;
-      taskIdToCoords.set(t.id, { lat: t.pickup_lat, lng: t.pickup_lng });
-    }
-
-    const agg = new Map<string, { lat: number; lng: number; count: number }>();
-    for (const row of grouped) {
-      const coords = taskIdToCoords.get(row.task_id);
-      if (!coords) continue;
-
-      const count = row._count._all ?? 0;
-      if (!count) continue;
-
-      const latStr = coords.lat.toFixed(6);
-      const lngStr = coords.lng.toFixed(6);
-      const key = `${latStr},${lngStr}`;
-
-      const existing = agg.get(key);
-      if (existing) {
-        existing.count += count;
-        continue;
-      }
-
-      agg.set(key, {
-        lat: Number(latStr),
-        lng: Number(lngStr),
-        count,
-      });
-    }
-
-    return Array.from(agg.values());
+    // 每个任务返回一个点，不聚合
+    return tasks.map((task) => ({
+      lat: task.pickup_lat,
+      lng: task.pickup_lng,
+      count: 1,
+      name: task.pickup_address || `任务${task.id}`
+    }));
   }
 
   async getLogs(input: AdminLogListInput) {
@@ -652,14 +625,14 @@ export class AdminService {
       ...(ip ? { ip: { contains: ip } } : undefined),
       ...(keyword
         ? {
-            user: {
-              OR: [
-                { student_id: { contains: keyword } },
-                { phone: { contains: keyword } },
-                { nickname: { contains: keyword } },
-              ],
-            },
-          }
+          user: {
+            OR: [
+              { student_id: { contains: keyword } },
+              { phone: { contains: keyword } },
+              { nickname: { contains: keyword } },
+            ],
+          },
+        }
         : undefined),
       ...((startDate || endDate) && {
         login_time: {
@@ -752,8 +725,8 @@ export class AdminService {
       ...(method ? { method } : undefined),
       ...(keyword
         ? {
-            OR: [{ error_message: { contains: keyword } }, { stack: { contains: keyword } }],
-          }
+          OR: [{ error_message: { contains: keyword } }, { stack: { contains: keyword } }],
+        }
         : undefined),
       ...((startDate || endDate) && {
         created_at: {
@@ -962,10 +935,13 @@ export class AdminService {
     if (!Number.isFinite(input.userId) || input.userId <= 0) {
       throw new AdminError(400, "userId 不合法");
     }
+    if (!input.newPassword || typeof input.newPassword !== 'string' || input.newPassword.trim().length < 6) {
+      throw new AdminError(400, "密码不能少于6位");
+    }
 
     const now = new Date();
-    const defaultPassword = "123456";
-    const passwordHash = await bcrypt.hash(defaultPassword, 10);
+    const newPassword = input.newPassword.trim();
+    const passwordHash = await bcrypt.hash(newPassword, 10);
 
     const result = await prisma.$transaction(async (tx) => {
       const user = await tx.user.findUnique({
@@ -992,7 +968,6 @@ export class AdminService {
           target_id: input.userId,
           detail_json: toAdminLogDetail({
             at: now.toISOString(),
-            to_default: true,
           }),
         },
       });
@@ -1080,7 +1055,7 @@ export class AdminService {
 
       await tx.task.update({
         where: { id: order.task_id },
-        data: { status: TaskStatus.PENDING },
+        data: { status: TaskStatus.CANCELLED },
       });
 
       const nextOrder = await tx.order.update({
@@ -1115,7 +1090,7 @@ export class AdminService {
     if (fromStatus) {
       notificationService
         .notifyOrderStatusChanged({ orderId: updated.id, fromStatus, toStatus: updated.status })
-        .catch(() => {});
+        .catch(() => { });
     }
 
     return updated;
@@ -1181,7 +1156,7 @@ export class AdminService {
     if (fromStatus) {
       notificationService
         .notifyOrderStatusChanged({ orderId: order.id, fromStatus, toStatus: order.status })
-        .catch(() => {});
+        .catch(() => { });
     }
 
     return order;
@@ -1775,8 +1750,13 @@ export class AdminService {
       { key: "base_delivery_fee", value: "5" },
       { key: "distance_price_per_km", value: "1" },
       { key: "urgent_fee", value: "3" },
+      { key: "ai_pricing_enabled", value: "false" },
+      { key: "pricing_model_version", value: "0" },
       { key: "cancel_penalty_rate", value: "0.2" },
       { key: "auto_confirm_minutes", value: "10" },
+      { key: "timeout_pending_task_minutes", value: "120" },
+      { key: "timeout_accepted_no_pickup_minutes", value: "20" },
+      { key: "timeout_picked_no_complete_minutes", value: "40" },
     ];
 
     const defaultKeys = defaults.map((d) => d.key);
@@ -1865,6 +1845,240 @@ export class AdminService {
     });
 
     return { config: result };
+  }
+
+  async processComplaintByAdminV2(input: {
+    adminId: number;
+    complaintId: number;
+    liableParty: unknown;
+    refundAmount: unknown;
+    deductScore: unknown;
+    adminRemark: unknown;
+  }) {
+    if (!Number.isFinite(input.adminId) || input.adminId <= 0) {
+      throw new AdminError(400, "adminId 不合法");
+    }
+    if (!Number.isFinite(input.complaintId) || input.complaintId <= 0) {
+      throw new AdminError(400, "complaintId 不合法");
+    }
+
+    const liablePartyRaw = typeof input.liableParty === "string" ? input.liableParty.trim().toLowerCase() : "";
+    const liableParty = liablePartyRaw === "user" || liablePartyRaw === "runner" || liablePartyRaw === "none" ? liablePartyRaw : null;
+    if (!liableParty) {
+      throw new AdminError(400, "liableParty 必须为 user/runner/none");
+    }
+
+    const adminRemark = typeof input.adminRemark === "string" ? input.adminRemark.trim() : "";
+    if (!adminRemark) {
+      throw new AdminError(400, "adminRemark 为必填");
+    }
+
+    const toNonNegativeInt = (value: unknown): number | null => {
+      if (value === undefined || value === null || value === "") return 0;
+      const n = typeof value === "number" ? value : typeof value === "string" ? Number(value.trim()) : NaN;
+      if (!Number.isFinite(n)) return null;
+      const v = Math.trunc(n);
+      if (v < 0) return null;
+      return v;
+    };
+
+    const deductScore = toNonNegativeInt(input.deductScore);
+    if (deductScore === null) {
+      throw new AdminError(400, "deductScore 不合法");
+    }
+
+    const toNonNegativeMoney = (value: unknown): Prisma.Decimal | null => {
+      if (value === undefined || value === null || value === "") return new Prisma.Decimal(0);
+      try {
+        const dec =
+          typeof value === "number" && Number.isFinite(value)
+            ? new Prisma.Decimal(value)
+            : typeof value === "string" && value.trim()
+              ? new Prisma.Decimal(value.trim())
+              : null;
+        if (!dec) return null;
+        if (dec.isNegative()) return null;
+        return roundMoney(dec);
+      } catch {
+        return null;
+      }
+    };
+
+    const refundAmount = toNonNegativeMoney(input.refundAmount);
+    if (!refundAmount) {
+      throw new AdminError(400, "refundAmount 不合法");
+    }
+
+    const now = new Date();
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const complaint = await tx.complaint.findUnique({
+        where: { id: input.complaintId },
+        select: {
+          id: true,
+          order_id: true,
+          creator_id: true,
+          status: true,
+          order: {
+            select: {
+              id: true,
+              taker_id: true,
+              task: { select: { publisher_id: true } },
+            },
+          },
+        },
+      });
+      if (!complaint) {
+        throw new AdminError(404, "投诉工单不存在");
+      }
+      if (complaint.status === ComplaintStatus.RESOLVED || complaint.status === ComplaintStatus.REJECTED) {
+        throw new AdminError(409, "投诉工单已处理");
+      }
+
+      const publisherId = complaint.order.task.publisher_id;
+      const runnerId = complaint.order.taker_id;
+
+      if (!Number.isFinite(publisherId) || publisherId <= 0) {
+        throw new AdminError(409, "订单缺少发布者信息");
+      }
+
+      if (liableParty === "runner" && (!Number.isFinite(runnerId) || runnerId <= 0)) {
+        throw new AdminError(409, "订单未指定跑腿员");
+      }
+      if ((liableParty === "user" || refundAmount.gt(0)) && (!Number.isFinite(runnerId) || runnerId <= 0)) {
+        throw new AdminError(409, "订单未指定跑腿员");
+      }
+
+      const toStatus = liableParty === "none" ? ComplaintStatus.REJECTED : ComplaintStatus.RESOLVED;
+
+      const next = await tx.complaint.update({
+        where: { id: complaint.id },
+        data: {
+          status: toStatus,
+          admin_note: adminRemark,
+          admin_id: input.adminId,
+          processed_at: now,
+        },
+        include: {
+          creator: { select: { id: true, student_id: true, phone: true, nickname: true, role: true } },
+          admin: { select: { id: true, student_id: true, phone: true, nickname: true, role: true } },
+          order: {
+            select: {
+              id: true,
+              status: true,
+              created_at: true,
+              updated_at: true,
+              taker: { select: { id: true, student_id: true, phone: true, nickname: true, role: true } },
+              task: {
+                select: {
+                  id: true,
+                  type: true,
+                  pickup_address: true,
+                  delivery_address: true,
+                  fee_total: true,
+                  tip: true,
+                  publisher: { select: { id: true, student_id: true, phone: true, nickname: true, role: true } },
+                },
+              },
+            },
+          },
+        },
+      });
+
+      const effectiveDeductScore =
+        liableParty === "runner" ? (deductScore > 0 ? deductScore : 20) : deductScore;
+
+      if (liableParty !== "none" && effectiveDeductScore > 0) {
+        const liableUserId = liableParty === "user" ? publisherId : (runnerId as number);
+        await creditService.changeCreditScore({
+          tx,
+          userId: liableUserId,
+          delta: -effectiveDeductScore,
+        });
+      }
+
+      if (liableParty !== "none" && refundAmount.gt(0)) {
+        const payerUserId = liableParty === "user" ? publisherId : (runnerId as number);
+        const receiverUserId = liableParty === "user" ? (runnerId as number) : publisherId;
+
+        if (payerUserId === receiverUserId) {
+          throw new AdminError(409, "退款双方相同，无法处理");
+        }
+
+        const payerWallet = await tx.userWallet.upsert({
+          where: { user_id: payerUserId },
+          create: { user_id: payerUserId },
+          update: {},
+        });
+        const receiverWallet = await tx.userWallet.upsert({
+          where: { user_id: receiverUserId },
+          create: { user_id: receiverUserId },
+          update: {},
+        });
+
+        const payerBeforeTotal = payerWallet.balance.plus(payerWallet.frozen);
+        const payerAfterTotal = payerBeforeTotal.minus(refundAmount);
+        const receiverBeforeTotal = receiverWallet.balance.plus(receiverWallet.frozen);
+        const receiverAfterTotal = receiverBeforeTotal.plus(refundAmount);
+
+        const deducted = await tx.userWallet.updateMany({
+          where: { id: payerWallet.id, balance: { gte: refundAmount } },
+          data: { balance: { decrement: refundAmount } },
+        });
+        if (deducted.count !== 1) {
+          throw new AdminError(409, "余额不足，无法退款");
+        }
+
+        await tx.userWallet.update({
+          where: { id: receiverWallet.id },
+          data: { balance: { increment: refundAmount } },
+        });
+
+        await tx.walletLog.createMany({
+          data: [
+            {
+              wallet_id: payerWallet.id,
+              type: "COMPLAINT_REFUND_OUT",
+              amount: refundAmount,
+              ref_order_id: complaint.order_id,
+              before_balance: payerBeforeTotal,
+              after_balance: payerAfterTotal,
+            },
+            {
+              wallet_id: receiverWallet.id,
+              type: "COMPLAINT_REFUND_IN",
+              amount: refundAmount,
+              ref_order_id: complaint.order_id,
+              before_balance: receiverBeforeTotal,
+              after_balance: receiverAfterTotal,
+            },
+          ],
+        });
+      }
+
+      await tx.adminLog.create({
+        data: {
+          admin_id: input.adminId,
+          action: "COMPLAINT_PROCESS",
+          target_type: "COMPLAINT",
+          target_id: complaint.id,
+          detail_json: toAdminLogDetail({
+            liableParty,
+            refundAmount: refundAmount.toString(),
+            deductScore,
+            adminRemark,
+            to_status: toStatus,
+            order_id: complaint.order_id,
+            creator_id: complaint.creator_id,
+            at: now.toISOString(),
+          }),
+        },
+      });
+
+      return next;
+    });
+
+    return updated;
   }
 
   async processComplaint(input: ProcessComplaintInput) {
@@ -1956,7 +2170,7 @@ export class AdminService {
       }
 
       const severe = isSevereComplaint(complaint.reason);
-      const creditDelta = severe ? -10 : -5;
+      const creditDelta = -20;
 
       await creditService.changeCreditScore({
         tx,
@@ -2039,7 +2253,7 @@ export class AdminService {
           complaintId: notifyComplaintId,
           message: "您有一条投诉已处理",
         })
-        .catch(() => {});
+        .catch(() => { });
     }
 
     return updated;
