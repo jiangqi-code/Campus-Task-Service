@@ -3,6 +3,29 @@ import { AuthError, AuthService } from "../services/auth.service";
 
 const authService = new AuthService();
 
+export const sendCode: RequestHandler = async (req, res, next) => {
+  try {
+    const result = authService.sendVerificationCode(String(req.body?.phone ?? ''));
+    res.status(200).json(result);
+  } catch (err) {
+    if (err instanceof AuthError) return void res.status(err.status).json({ error: err.message });
+    next(err);
+  }
+};
+
+export const verifyCode: RequestHandler = async (req, res, next) => {
+  try {
+    const result = authService.verifyVerificationCode(
+      String(req.body?.phone ?? ''),
+      String(req.body?.code ?? req.body?.verification_code ?? ''),
+    );
+    res.status(200).json(result);
+  } catch (err) {
+    if (err instanceof AuthError) return void res.status(err.status).json({ error: err.message });
+    next(err);
+  }
+};
+
 export const register: RequestHandler = async (req, res, next) => {
   try {
     const { student_id, phone, password, nickname } = req.body as Partial<{

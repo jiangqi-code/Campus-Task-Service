@@ -45,6 +45,8 @@ export class ReviewService {
     rating: unknown;
     tags?: unknown;
     comment?: unknown;
+    images?: unknown;
+    isAnonymous?: unknown;
   }) {
     const orderId = input.orderId;
     if (!Number.isFinite(orderId) || orderId <= 0) {
@@ -66,6 +68,13 @@ export class ReviewService {
         : [];
     const comment =
       input.comment === undefined || input.comment === null ? null : String(input.comment).trim() || null;
+    if (!comment || comment.length < 5) {
+      throw new ReviewError(400, "文字评价至少需要 5 个字");
+    }
+    const images = Array.isArray(input.images)
+      ? input.images.map((item) => String(item).trim()).filter(Boolean).slice(0, 3)
+      : [];
+    const isAnonymous = input.isAnonymous === true || input.isAnonymous === 1 || String(input.isAnonymous).toLowerCase() === "true";
 
     if (comment) {
       const match = await sensitiveWordService.matchText(comment);
@@ -104,6 +113,8 @@ export class ReviewService {
           rating,
           tags_json: tags as Prisma.InputJsonValue,
           comment,
+          images_json: images as Prisma.InputJsonValue,
+          is_anonymous: isAnonymous,
         },
       });
 
@@ -154,6 +165,8 @@ export class ReviewService {
         select: {
           id: true,
           rating: true,
+          images_json: true,
+          is_anonymous: true,
           tags_json: true,
           comment: true,
           created_at: true,
@@ -182,8 +195,10 @@ export class ReviewService {
         rating: review.rating,
         tags: normalizeTags(review.tags_json),
         content: review.comment ?? "",
-        images: [],
-        fromUserName: review.order.task.publisher.nickname ?? "",
+        images: normalizeTags(review.images_json),
+        isAnonymous: review.is_anonymous,
+        fromUserName: review.is_anonymous ? "匿名用户" : review.order.task.publisher.nickname ?? "",
+        reviewerNickname: review.is_anonymous ? "匿名用户" : review.order.task.publisher.nickname ?? "",
         orderId: review.order.id,
         orderStatus: review.order.status,
         createdAt: review.created_at,
@@ -226,6 +241,8 @@ export class ReviewService {
         select: {
           id: true,
           rating: true,
+          images_json: true,
+          is_anonymous: true,
           tags_json: true,
           comment: true,
           created_at: true,
@@ -250,8 +267,10 @@ export class ReviewService {
         rating: review.rating,
         tags: normalizeTags(review.tags_json),
         content: review.comment ?? "",
-        images: [],
+        images: normalizeTags(review.images_json),
+        isAnonymous: review.is_anonymous,
         toUserName: review.order.taker?.nickname ?? "",
+        revieweeNickname: review.order.taker?.nickname ?? "",
         orderId: review.order.id,
         orderStatus: review.order.status,
         createdAt: review.created_at,

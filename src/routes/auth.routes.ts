@@ -6,6 +6,8 @@ import {
   login,
   me,
   register,
+  sendCode,
+  verifyCode,
   submitAuth,
   applyRunner,
   applyStatus,
@@ -20,6 +22,9 @@ const router = Router();
 router.post("/register", register);
 router.post("/login", login);
 router.get("/me", requireAuth, me);
+
+router.post('/send-code', sendCode);
+router.post('/verify-code', verifyCode);
 
 // 用户认证路由
 export const userAuthRouter = Router();

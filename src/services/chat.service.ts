@@ -1,5 +1,6 @@
 import { PrismaClient } from "@prisma/client";
 import { MessageService } from "./message.service";
+import { websocketService } from "./websocket.service";
 
 export class ChatError extends Error {
   public readonly status: number;
@@ -90,10 +91,13 @@ export class ChatService {
       String(orderId)                     // conversationId
     );
 
+    websocketService.pushToOrder(orderId, "chat:message", chatMessage);
+    websocketService.pushToUser(toUserId, "chat:message", chatMessage);
+
     return chatMessage;
   }
 
-  async getMessages(input: { orderId: unknown; userId: number }) {
+  async getMessages(input: { orderId: unknown; userId: number; page?: unknown; pageSize?: unknown }) {
     const orderId = parsePositiveInt(input.orderId);
     if (!orderId) throw new ChatError(400, "orderId 不合法");
 
@@ -115,11 +119,19 @@ export class ChatService {
     const isTaker = takerId !== null && userId === takerId;
     if (!isPublisher && !isTaker) throw new ChatError(403, "无权限");
 
-    const messages = await prisma.chatMessage.findMany({
+    const page = parsePositiveInt(input.page) ?? 1;
+    const pageSize = Math.min(50, parsePositiveInt(input.pageSize) ?? 20);
+    const total = await prisma.chatMessage.count({ where: { order_id: orderId } });
+    const newestFirst = await prisma.chatMessage.findMany({
       where: { order_id: orderId },
-      orderBy: { created_at: "asc" },
+      orderBy: { created_at: "desc" },
+      skip: (page - 1) * pageSize,
+      take: pageSize,
     });
 
-    return messages;
+    return {
+      items: newestFirst.reverse(),
+      pagination: { page, pageSize, total, hasMore: page * pageSize < total },
+    };
   }
 }

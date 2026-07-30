@@ -262,6 +262,8 @@ model OrderReview {
   rating     Int
   tags_json  Json?
   comment    String?  @db.Text
+  images_json Json?
+  is_anonymous Boolean @default(false)
   created_at DateTime @default(now())
   updated_at DateTime @default(now()) @updatedAt
 
@@ -294,6 +296,9 @@ model Withdraw {
   id             Int       @id @default(autoincrement())
   user_id        Int
   amount         Decimal   @db.Decimal(12, 2)
+  payout_account String?   @db.VarChar(191)
+  fee            Decimal   @default(0) @db.Decimal(12, 2)
+  expected_at    DateTime?
   status         String
   apply_time     DateTime?
   audit_time     DateTime?

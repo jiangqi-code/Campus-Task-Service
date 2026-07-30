@@ -12,14 +12,16 @@ export const create: RequestHandler = async (req, res, next) => {
     }
 
     const orderId = Number.parseInt(String(req.params.orderId ?? ""), 10);
-    const { rating, tags, comment } = req.body as Partial<Record<string, unknown>>;
+    const { rating, tags, comment, content, images, anonymous, isAnonymous, is_anonymous } = req.body as Partial<Record<string, unknown>>;
 
     const review = await reviewService.createOrderReview({
       orderId,
       reviewerUserId: user.id,
       rating,
       tags,
-      comment,
+      comment: comment ?? content,
+      images,
+      isAnonymous: isAnonymous ?? is_anonymous ?? anonymous,
     });
 
     res.status(201).json({ review });

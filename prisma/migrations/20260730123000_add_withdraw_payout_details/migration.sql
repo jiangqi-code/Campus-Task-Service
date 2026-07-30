@@ -1,0 +1,4 @@
+ALTER TABLE `withdraws`
+  ADD COLUMN `payout_account` VARCHAR(191) NULL,
+  ADD COLUMN `fee` DECIMAL(12, 2) NOT NULL DEFAULT 0,
+  ADD COLUMN `expected_at` DATETIME(3) NULL;

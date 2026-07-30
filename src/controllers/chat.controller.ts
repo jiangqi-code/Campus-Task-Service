@@ -37,9 +37,14 @@ export const messages: RequestHandler = async (req, res, next) => {
       return;
     }
 
-    const orderId = (req.query ?? {}).orderId;
-    const msgs = await chatService.getMessages({ orderId, userId: user.id });
-    res.status(200).json({ messages: msgs });
+    const query = req.query ?? {};
+    const result = await chatService.getMessages({
+      orderId: query.orderId,
+      userId: user.id,
+      page: query.page,
+      pageSize: query.pageSize ?? query.page_size,
+    });
+    res.status(200).json({ messages: result.items, pagination: result.pagination });
   } catch (err) {
     if (err instanceof ChatError) {
       res.status(err.status).json({ error: err.message });

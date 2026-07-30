@@ -20,6 +20,7 @@ export const WithdrawStatus = {
 type ApplyWithdrawInput = {
   userId: number;
   amount: string | number;
+  payoutAccount: string;
 };
 
 type ListMyWithdrawsInput = {
@@ -60,6 +61,8 @@ export class WithdrawService {
     if (!amount.gt(0)) {
       throw new WithdrawError(400, "amount 必须大于 0");
     }
+    const payoutAccount = String(input.payoutAccount ?? "").trim();
+    if (!payoutAccount) throw new WithdrawError(400, "到账账户不能为空");
 
     const user = await prisma.user.findUnique({
       where: { id: input.userId },
@@ -73,6 +76,8 @@ export class WithdrawService {
     }
 
     const now = new Date();
+    const expectedAt = new Date(now);
+    expectedAt.setDate(expectedAt.getDate() + 3);
     const withdraw = await prisma.$transaction(async (tx) => {
       const wallet =
         (await tx.userWallet.findUnique({
@@ -104,6 +109,9 @@ export class WithdrawService {
         data: {
           user_id: input.userId,
           amount,
+          payout_account: payoutAccount,
+          fee: new Prisma.Decimal(0),
+          expected_at: expectedAt,
           status: WithdrawStatus.PENDING,
           apply_time: now,
         },

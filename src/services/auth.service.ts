@@ -21,6 +21,12 @@ type RegisterInput = {
   nickname: string;
 };
 
+type VerificationCodeRecord = { code: string; expiresAt: number; sentAt: number; verifiedAt?: number };
+const verificationCodes = new Map<string, VerificationCodeRecord>();
+const PHONE_RE = /^1[3-9]\d{9}$/;
+const STUDENT_ID_RE = /^[A-Za-z0-9]{6,20}$/;
+const PASSWORD_RE = /^(?=.*[A-Za-z])(?=.*\d).{8,32}$/;
+
 type LoginInput = {
   account: string;
   password: string;
@@ -107,6 +113,41 @@ const toAdminLogDetail = (value: unknown): Prisma.InputJsonValue | undefined => 
 };
 
 export class AuthService {
+  sendVerificationCode(rawPhone: string) {
+    const phone = rawPhone?.trim();
+    if (!PHONE_RE.test(phone)) throw new AuthError(400, '请输入正确的11位手机号');
+    const now = Date.now();
+    const previous = verificationCodes.get(phone);
+    if (previous && now - previous.sentAt < 60_000) {
+      throw new AuthError(429, '验证码发送过于频繁，请稍后再试');
+    }
+    const code = String(Math.floor(100000 + Math.random() * 900000));
+    verificationCodes.set(phone, { code, sentAt: now, expiresAt: now + 5 * 60_000 });
+    console.info(`[auth] mock verification code for ${phone}: ${code}`);
+    return {
+      message: '验证码已发送',
+      expiresIn: 300,
+      resendAfter: 60,
+      ...(process.env.NODE_ENV === 'production' ? {} : { mockCode: code }),
+    };
+  }
+
+  verifyVerificationCode(rawPhone: string, rawCode: string) {
+    const phone = rawPhone?.trim();
+    const code = rawCode?.trim();
+    if (!PHONE_RE.test(phone)) throw new AuthError(400, '请输入正确的11位手机号');
+    if (!/^\d{6}$/.test(code)) throw new AuthError(400, '验证码必须是6位数字');
+    const record = verificationCodes.get(phone);
+    if (!record || record.expiresAt < Date.now()) {
+      verificationCodes.delete(phone);
+      throw new AuthError(400, '验证码已失效，请重新获取');
+    }
+    if (record.code !== code) throw new AuthError(400, '验证码错误');
+    record.verifiedAt = Date.now();
+    verificationCodes.set(phone, record);
+    return { verified: true };
+  }
+
   async register(input: RegisterInput) {
     const student_id = input.student_id?.trim();
     const phone = input.phone?.trim();
@@ -118,6 +159,14 @@ export class AuthService {
     }
     if (password.length < 6) {
       throw new AuthError(400, "password 至少 6 位");
+    }
+
+    if (!STUDENT_ID_RE.test(student_id)) throw new AuthError(400, '学号需为6-20位字母或数字');
+    if (!PHONE_RE.test(phone)) throw new AuthError(400, '请输入正确的11位手机号');
+    if (!PASSWORD_RE.test(password)) throw new AuthError(400, '密码需为8-32位，且包含字母和数字');
+    const verification = verificationCodes.get(phone);
+    if (!verification?.verifiedAt || verification.expiresAt < Date.now()) {
+      throw new AuthError(400, '请先完成手机验证码校验');
     }
 
     const existing = await prisma.user.findFirst({
@@ -158,6 +207,7 @@ export class AuthService {
       });
 
       const token = signToken({ userId: user.id, role: user.role });
+      verificationCodes.delete(phone);
       return { token };
     } catch (err) {
       if (err instanceof Prisma.PrismaClientKnownRequestError) {

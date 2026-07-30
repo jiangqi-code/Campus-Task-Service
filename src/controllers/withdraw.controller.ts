@@ -11,10 +11,11 @@ export const apply: RequestHandler = async (req, res, next) => {
       return;
     }
 
-    const { amount } = req.body as Partial<{ amount: string | number }>;
+    const { amount, payoutAccount, payout_account } = req.body as Partial<{ amount: string | number; payoutAccount: string; payout_account: string }>;
     const withdraw = await withdrawService.apply({
       userId: user.id,
       amount: amount ?? "",
+      payoutAccount: String(payoutAccount ?? payout_account ?? ""),
     });
 
     res.status(201).json({ withdraw });
