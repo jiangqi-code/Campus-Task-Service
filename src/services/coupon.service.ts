@@ -1,5 +1,5 @@
 import { CouponAction, CouponStatus, CouponTriggerType, CouponType, Prisma, PrismaClient, UserCouponStatus } from '@prisma/client'
-import { triggerCouponDistribution } from './couponAutomation.service'
+import { issueWelcomeCouponsForUser, triggerCouponDistribution } from './couponAutomation.service'
 import { createClient } from 'redis'
 
 const prisma = new PrismaClient()
@@ -178,13 +178,19 @@ export async function claimCoupons(userId: number, input: Record<string, unknown
 
 export async function listUsable(userId: number, query: Record<string, unknown>) {
   await expireUserCoupons(userId)
-  const amount = Number(query.amount ?? query.order_amount ?? 0)
+  const amount = Number(query.orderAmount ?? query.order_amount ?? query.amount ?? 0)
   const rows = await prisma.userCoupon.findMany({
     where: { user_id: userId, claimed_at: { not: null }, status: UserCouponStatus.UNUSED, expired_at: { gt: new Date() } },
     include: { coupon: true },
     orderBy: { expired_at: 'asc' },
   })
   return rows.filter(v => !amount || Number(v.coupon.min_order_amount) <= amount)
+}
+
+export async function welcomeCoupons(userId: number) {
+  const issued = await prisma.$transaction(tx => issueWelcomeCouponsForUser(tx, userId), { isolationLevel: Prisma.TransactionIsolationLevel.Serializable })
+  const pending = await checkNotification(userId)
+  return { issued, coupons: pending }
 }
 
 export async function useCoupon(userId: number, input: Record<string, unknown>) {

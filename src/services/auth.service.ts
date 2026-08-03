@@ -1,5 +1,6 @@
 import { Prisma, PrismaClient, Role } from "@prisma/client";
 import { parseIdCard } from "../utils/idCard";
+import { issueWelcomeCouponsForUser } from "./couponAutomation.service";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { approveRunnerAuth } from "./admin.service";
@@ -22,6 +23,8 @@ type RegisterInput = {
   nickname: string;
   birth_date?: string;
   id_card?: string;
+  birthDate?: string;
+  idCard?: string;
 };
 
 type VerificationCodeRecord = { code: string; expiresAt: number; sentAt: number; verifiedAt?: number };
@@ -156,12 +159,13 @@ export class AuthService {
     const phone = input.phone?.trim();
     const password = input.password ?? "";
     const nickname = input.nickname?.trim();
-    const idCard = input.id_card?.trim().toUpperCase() || undefined;
+    const idCard = (input.id_card ?? input.idCard)?.trim().toUpperCase() || undefined;
     const parsedIdCard = idCard ? parseIdCard(idCard) : null;
     if (idCard && !parsedIdCard?.isValid) throw new AuthError(400, "身份证号格式或校验位不正确");
-    const explicitBirthDate = input.birth_date ? new Date(input.birth_date) : null;
+    const rawBirthDate = input.birth_date ?? input.birthDate;
+    const explicitBirthDate = rawBirthDate ? new Date(rawBirthDate) : null;
     if (explicitBirthDate && !Number.isFinite(explicitBirthDate.getTime())) throw new AuthError(400, "出生日期不合法");
-    const birthDate = explicitBirthDate || parsedIdCard?.birthDate || undefined;
+    const birthDate = parsedIdCard?.birthDate || explicitBirthDate || undefined;
 
     if (!student_id || !phone || !password || !nickname) {
       throw new AuthError(400, "student_id、phone、password、nickname 为必填");
@@ -202,7 +206,7 @@ export class AuthService {
             birth_date: birthDate,
             id_card: idCard,
           },
-          select: { id: true, role: true },
+          select: { id: true, role: true, student_id: true, phone: true, nickname: true, birth_date: true, id_card: true },
         });
 
         await tx.userWallet.create({
@@ -214,12 +218,15 @@ export class AuthService {
           select: { id: true },
         });
 
-        return createdUser;
+        const welcomeCoupons = await issueWelcomeCouponsForUser(tx, createdUser.id);
+
+        return { ...createdUser, welcomeCoupons };
       });
 
       const token = signToken({ userId: user.id, role: user.role });
       verificationCodes.delete(phone);
-      return { token };
+      const { welcomeCoupons, ...safeUser } = user;
+      return { token, user: safeUser, welcomeCoupons };
     } catch (err) {
       if (err instanceof Prisma.PrismaClientKnownRequestError) {
         if (err.code === "P2002") {
@@ -249,6 +256,8 @@ export class AuthService {
         role: true,
         status: true,
         credit_score: true,
+        birth_date: true,
+        id_card: true,
         password_hash: true,
       },
     });

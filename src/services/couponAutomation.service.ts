@@ -1,4 +1,4 @@
-import { CouponAction, CouponStatus, CouponTriggerType, PrismaClient, UserCouponStatus } from '@prisma/client'
+import { CouponAction, CouponStatus, CouponTriggerType, Prisma, PrismaClient, UserCouponStatus } from '@prisma/client'
 
 const prisma = new PrismaClient()
 const pad = (n: number) => String(n).padStart(2, '0')
@@ -15,6 +15,40 @@ function dayBounds(date: Date) {
   const end = new Date(start)
   end.setDate(end.getDate() + 1)
   return { start, end }
+}
+
+export async function issueWelcomeCouponsForUser(tx: Prisma.TransactionClient, userId: number, date = new Date()) {
+  const { start, end } = dayBounds(date)
+  const events = await tx.couponEvent.findMany({
+    where: {
+      trigger_type: CouponTriggerType.NEW_USER,
+      is_active: true,
+      AND: [{ OR: [{ start_date: null }, { start_date: { lte: end } }] }, { OR: [{ end_date: null }, { end_date: { gte: start } }] }],
+      coupon: { status: CouponStatus.ACTIVE, start_date: { lte: date }, end_date: { gt: date } },
+    },
+    include: { coupon: true },
+  })
+  const issued: any[] = []
+  for (const event of events) {
+    const key = `${event.id}:${userId}:${dayKey(date)}`
+    const existing = await tx.userCoupon.findUnique({ where: { distribution_key: key }, include: { coupon: true } })
+    if (existing) { issued.push(existing); continue }
+    if (event.coupon.total_limit > 0) {
+      const reserved = await tx.coupon.updateMany({ where: { id: event.coupon_id, received_count: { lt: event.coupon.total_limit } }, data: { received_count: { increment: 1 } } })
+      if (!reserved.count) continue
+    } else {
+      await tx.coupon.update({ where: { id: event.coupon_id }, data: { received_count: { increment: 1 } } })
+    }
+    const expires = new Date(date)
+    expires.setDate(expires.getDate() + Math.max(1, event.coupon.validity_days))
+    const row = await tx.userCoupon.create({
+      data: { user_id: userId, coupon_id: event.coupon_id, status: UserCouponStatus.UNUSED, expired_at: expires, source_event_id: event.id, distribution_key: key },
+      include: { coupon: true },
+    })
+    await tx.couponLog.create({ data: { user_id: userId, coupon_id: event.coupon_id, action: CouponAction.ADMIN_GIVE, detail: { eventId: event.id, triggerType: CouponTriggerType.NEW_USER, pendingClaim: true } } })
+    issued.push(row)
+  }
+  return issued
 }
 
 async function targetUserIds(trigger: CouponTriggerType, date: Date) {
@@ -72,4 +106,3 @@ export async function triggerCouponDistribution(date = new Date()) {
   }
   return { date: dayKey(date), created, events: details }
 }
-
