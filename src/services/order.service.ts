@@ -566,6 +566,10 @@ export const acceptTask = async (taskId: number, userId: number) => {
         data: { status: TaskStatus.ACCEPTED },
       });
 
+      if (task.user_coupon_id) {
+        await tx.userCoupon.update({ where: { id: task.user_coupon_id }, data: { order_id: created.id } });
+      }
+
       return created;
     });
 

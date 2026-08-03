@@ -3,6 +3,7 @@
 import { Prisma, PrismaClient, TaskStatus } from "@prisma/client";
 import { MapError, MapService } from "./map.service";
 import { calculateDeliveryFee } from "./systemConfig.service";
+import { consumeUserCoupon, CouponError, quoteUserCoupon } from "./coupon.service";
 
 export class TaskError extends Error {
   public readonly status: number;
@@ -35,6 +36,7 @@ type PublishTaskInput = {
   is_urgent?: boolean | null;
   tip?: string | number | null;
   scheduled_time?: string | number | Date | null;
+  user_coupon_id?: string | null;
 };
 
 type ListTaskInput = {
@@ -274,19 +276,24 @@ export class TaskService {
     }
 
     const task = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+      const couponQuote = input.user_coupon_id
+        ? await quoteUserCoupon(tx, input.publisherId, input.user_coupon_id, fee_total)
+        : null;
+      const discountAmount = couponQuote?.discountAmount ?? new Prisma.Decimal(0);
+      const payableFee = couponQuote?.payableAmount ?? fee_total;
       const wallet = await tx.userWallet.findUnique({
         where: { user_id: input.publisherId },
         select: { balance: true },
       });
 
       const balance = wallet?.balance ?? new Prisma.Decimal(0);
-      const requiredAmount = fee_total.plus(tip);
+      const requiredAmount = payableFee.plus(tip);
 
       if (balance.lt(requiredAmount)) {
         throw new TaskError(409, "余额不足，无法发布任务");
       }
 
-      return tx.task.create({
+      const created = await tx.task.create({
         data: {
           publisher_id: input.publisherId,
           pickup_address,
@@ -304,12 +311,20 @@ export class TaskService {
           is_fragile,
           need_inspection,
           is_urgent,
-          fee_total,
+          fee_total: payableFee,
+          original_amount: fee_total,
+          discount_amount: discountAmount,
+          user_coupon_id: input.user_coupon_id || null,
           tip,
           scheduled_time,
           status: scheduled_time ? TaskStatus.SCHEDULED : TaskStatus.PENDING,
         },
       });
+      if (input.user_coupon_id) await consumeUserCoupon(tx, input.publisherId, input.user_coupon_id, fee_total, created.id);
+      return created;
+    }).catch((error) => {
+      if (error instanceof CouponError) throw new TaskError(error.status, error.message);
+      throw error;
     });
 
     return task;

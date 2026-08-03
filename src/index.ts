@@ -30,6 +30,8 @@ import mapRouter from "./routes/map.routes";
 import creditRouter from "./routes/credit.routes";
 import pricingRouter from "./routes/pricing.routes";
 import adminPricingRouter from "./routes/adminPricing.routes";
+import couponRouter from "./routes/coupon.routes";
+import adminCouponRouter from "./routes/adminCoupon.routes";
 import { websocketService } from "./services/websocket.service";
 import { timeoutService } from "./services/timeout.service";
 import { scheduledTaskService } from "./services/scheduledTask.service";
@@ -159,6 +161,8 @@ app.use("/api/map", mapRouter);
 app.use("/api/credit", creditRouter);
 app.use("/api/pricing", pricingRouter);
 app.use("/api/admin/pricing", adminPricingRouter);
+app.use("/api/coupons", couponRouter);
+app.use("/api/admin/coupons", adminCouponRouter);
 
 
 const getMountPathFromRegexp = (regexp: any): string => {

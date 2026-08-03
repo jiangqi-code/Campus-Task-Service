@@ -41,6 +41,7 @@ export const publish: RequestHandler = async (req, res, next) => {
       is_urgent,
       tip,
       scheduled_time,
+      user_coupon_id,
     } = req.body as Partial<Record<string, unknown>>;
 
     const remarkMatch = await sensitiveWordService.matchText(remark);
@@ -81,6 +82,7 @@ export const publish: RequestHandler = async (req, res, next) => {
       is_urgent: toOptionalBoolean(is_urgent),
       tip: tip as string | number | null | undefined,
       scheduled_time: scheduled_time as string | number | Date | null | undefined,
+      user_coupon_id: user_coupon_id === undefined || user_coupon_id === null ? null : String(user_coupon_id),
     });
 
     res.status(201).json({ task });
