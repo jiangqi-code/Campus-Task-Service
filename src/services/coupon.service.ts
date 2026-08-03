@@ -1,4 +1,5 @@
-import { CouponAction, CouponStatus, CouponType, Prisma, PrismaClient, UserCouponStatus } from '@prisma/client'
+import { CouponAction, CouponStatus, CouponTriggerType, CouponType, Prisma, PrismaClient, UserCouponStatus } from '@prisma/client'
+import { triggerCouponDistribution } from './couponAutomation.service'
 import { createClient } from 'redis'
 
 const prisma = new PrismaClient()
@@ -55,7 +56,7 @@ export async function listMine(userId: number, query: Record<string, unknown>) {
   const page = Math.max(1, Number(query.page) || 1)
   const pageSize = Math.min(100, Math.max(1, Number(query.pageSize ?? query.page_size) || 10))
   const status = String(query.status || '').toUpperCase()
-  const where: Prisma.UserCouponWhereInput = { user_id: userId, ...(Object.values(UserCouponStatus).includes(status as UserCouponStatus) ? { status: status as UserCouponStatus } : {}) }
+  const where: Prisma.UserCouponWhereInput = { user_id: userId, claimed_at: { not: null }, ...(Object.values(UserCouponStatus).includes(status as UserCouponStatus) ? { status: status as UserCouponStatus } : {}) }
   const [list, total] = await prisma.$transaction([
     prisma.userCoupon.findMany({ where, include: { coupon: true }, orderBy: { received_at: 'desc' }, skip: (page - 1) * pageSize, take: pageSize }),
     prisma.userCoupon.count({ where }),
@@ -87,7 +88,7 @@ export async function receiveCoupon(userId: number, couponId: string, action: Co
         const reserved = await tx.coupon.updateMany({ where: { id: couponId, received_count: { lt: coupon.total_limit } }, data: { received_count: { increment: 1 } } })
         if (!reserved.count) throw new CouponError(409, '优惠券已领完')
       } else await tx.coupon.update({ where: { id: couponId }, data: { received_count: { increment: 1 } } })
-      const userCoupon = await tx.userCoupon.create({ data: { user_id: userId, coupon_id: couponId, expired_at: coupon.end_date } })
+      const userCoupon = await tx.userCoupon.create({ data: { user_id: userId, coupon_id: couponId, expired_at: coupon.end_date, claimed_at: new Date() } })
       await tx.couponLog.create({ data: { user_id: userId, coupon_id: couponId, action, detail: { userCouponId: userCoupon.id } } })
       return userCoupon
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable })
@@ -95,7 +96,7 @@ export async function receiveCoupon(userId: number, couponId: string, action: Co
 }
 
 export async function quoteUserCoupon(tx: Prisma.TransactionClient, userId: number, userCouponId: string, orderAmount: Prisma.Decimal.Value) {
-  const row = await tx.userCoupon.findFirst({ where: { id: userCouponId, user_id: userId }, include: { coupon: true } })
+  const row = await tx.userCoupon.findFirst({ where: { id: userCouponId, user_id: userId, claimed_at: { not: null } }, include: { coupon: true } })
   const now = new Date()
   if (!row || row.status !== UserCouponStatus.UNUSED) throw new CouponError(400, '优惠券不存在或已使用')
   if (row.expired_at <= now || row.coupon.end_date <= now || row.coupon.start_date > now || row.coupon.status !== CouponStatus.ACTIVE) throw new CouponError(400, '优惠券已过期或不可用')
@@ -145,7 +146,8 @@ function couponData(input: Record<string, unknown>, adminId?: number): Prisma.Co
   if (!Object.values(CouponType).includes(type) || !String(input.name || '').trim()) throw new CouponError(400, '名称和优惠券类型必填')
   if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime()) || end <= start) throw new CouponError(400, '有效期不合法')
   const value = money(String(input.value ?? 0)); if (value.lte(0) || (type === CouponType.DISCOUNT && value.gt(100))) throw new CouponError(400, '优惠券面值不合法')
-  return { name: String(input.name).trim(), code: String(input.code || code()).trim().toUpperCase(), type, value, min_order_amount: money(String(input.min_order_amount ?? input.minOrderAmount ?? 0)), max_discount: money(String(input.max_discount ?? input.maxDiscount ?? 0)), usage_limit: Math.max(1, Number(input.usage_limit ?? input.usageLimit) || 1), total_limit: Math.max(0, Number(input.total_limit ?? input.totalLimit) || 0), start_date: start, end_date: end, status: (String(input.status || CouponStatus.ACTIVE).toUpperCase() as CouponStatus), created_by: adminId || Number(input.created_by) }
+  const minAmount=money(String(input.min_amount ?? input.min_order_amount ?? input.minOrderAmount ?? 0))
+  return { name: String(input.name).trim(), code: String(input.code || code()).trim().toUpperCase(), type, value, min_order_amount: minAmount, max_discount: money(String(input.max_discount ?? input.maxDiscount ?? 0)), usage_limit: Math.max(1, Number(input.usage_limit ?? input.usageLimit) || 1), total_limit: Math.max(0, Number(input.total_limit ?? input.totalLimit) || 0), start_date: start, end_date: end, status: (String(input.status || CouponStatus.ACTIVE).toUpperCase() as CouponStatus), created_by: adminId || Number(input.created_by), discount_type:String(input.discount_type??type), discount_value:money(String(input.discount_value??value)), min_amount:minAmount, validity_days:Math.max(1,Number(input.validity_days??input.validityDays)||30) }
 }
 
 export const createCoupon = (adminId: number, input: Record<string, unknown>) => prisma.coupon.create({ data: couponData(input, adminId) })
@@ -153,3 +155,91 @@ export const updateCoupon = (id: string, input: Record<string, unknown>) => { co
 export async function deleteCoupon(id: string) { const count = await prisma.userCoupon.count({ where: { coupon_id: id } }); if (count) throw new CouponError(409, '已发放的优惠券不能删除，可改为停用'); return prisma.coupon.delete({ where: { id } }) }
 export async function usage(id: string) { const coupon = await prisma.coupon.findUnique({ where: { id } }); if (!coupon) throw new CouponError(404, '优惠券不存在'); const grouped = await prisma.userCoupon.groupBy({ by: ['status'], where: { coupon_id: id }, _count: { _all: true } }); return { coupon, received: coupon.received_count, used: coupon.used_count, remaining: coupon.total_limit === 0 ? null : Math.max(0, coupon.total_limit - coupon.received_count), statuses: grouped } }
 export const giveCoupon = (userId: number, couponId: string) => receiveCoupon(userId, couponId, CouponAction.ADMIN_GIVE)
+
+export async function checkNotification(userId: number) {
+  await expireUserCoupons(userId)
+  return prisma.userCoupon.findMany({
+    where: { user_id: userId, claimed_at: null, status: UserCouponStatus.UNUSED, expired_at: { gt: new Date() } },
+    include: { coupon: true },
+    orderBy: { created_at: 'desc' },
+  })
+}
+
+export async function claimCoupons(userId: number, input: Record<string, unknown>) {
+  const ids = Array.isArray(input.ids) ? input.ids.map(String) : [String(input.userCouponId ?? input.user_coupon_id ?? input.id ?? '')].filter(Boolean)
+  if (!ids.length) throw new CouponError(400, '请选择要领取的优惠券')
+  return prisma.$transaction(async tx => {
+    const rows = await tx.userCoupon.findMany({ where: { id: { in: ids }, user_id: userId, claimed_at: null, status: UserCouponStatus.UNUSED, expired_at: { gt: new Date() } }, include: { coupon: true } })
+    if (!rows.length) throw new CouponError(409, '优惠券不存在、已领取或已过期')
+    await tx.userCoupon.updateMany({ where: { id: { in: rows.map(v => v.id) }, user_id: userId, claimed_at: null }, data: { claimed_at: new Date() } })
+    return rows.map(v => ({ ...v, claimed_at: new Date() }))
+  })
+}
+
+export async function listUsable(userId: number, query: Record<string, unknown>) {
+  await expireUserCoupons(userId)
+  const amount = Number(query.amount ?? query.order_amount ?? 0)
+  const rows = await prisma.userCoupon.findMany({
+    where: { user_id: userId, claimed_at: { not: null }, status: UserCouponStatus.UNUSED, expired_at: { gt: new Date() } },
+    include: { coupon: true },
+    orderBy: { expired_at: 'asc' },
+  })
+  return rows.filter(v => !amount || Number(v.coupon.min_order_amount) <= amount)
+}
+
+export async function useCoupon(userId: number, input: Record<string, unknown>) {
+  const id = String(input.userCouponId ?? input.user_coupon_id ?? '')
+  const amount = money(String(input.orderAmount ?? input.order_amount ?? 0))
+  const orderId = input.orderId ?? input.order_id
+  if (!id || amount.lte(0)) throw new CouponError(400, '优惠券和订单金额不能为空')
+  const quote = await prisma.$transaction(async tx => {
+    const result = await consumeUserCoupon(tx, userId, id, amount)
+    if (orderId) await tx.userCoupon.update({ where: { id }, data: { order_id: Number(orderId), used_order_id: Number(orderId) } })
+    return result
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable })
+  return { orderAmount: quote.orderAmount, discountAmount: quote.discountAmount, payableAmount: quote.payableAmount }
+}
+
+export async function listEvents(query: Record<string, unknown>) {
+  const page = Math.max(1, Number(query.page) || 1), pageSize = Math.min(100, Math.max(1, Number(query.pageSize ?? query.page_size) || 10))
+  const where: Prisma.CouponEventWhereInput = {
+    ...(query.trigger_type && Object.values(CouponTriggerType).includes(String(query.trigger_type) as CouponTriggerType) ? { trigger_type: String(query.trigger_type) as CouponTriggerType } : {}),
+  }
+  const [list, total] = await prisma.$transaction([
+    prisma.couponEvent.findMany({ where, include: { coupon: true }, orderBy: { created_at: 'desc' }, skip: (page - 1) * pageSize, take: pageSize }),
+    prisma.couponEvent.count({ where }),
+  ])
+  return { list, total, page, pageSize }
+}
+
+function eventData(input: Record<string, unknown>, adminId?: number): Prisma.CouponEventUncheckedCreateInput {
+  const trigger = String(input.trigger_type ?? input.triggerType ?? '') as CouponTriggerType
+  if (!Object.values(CouponTriggerType).includes(trigger)) throw new CouponError(400, '发放触发类型不合法')
+  return {
+    coupon_id: String(input.coupon_id ?? input.couponId ?? ''),
+    trigger_type: trigger,
+    start_date: input.start_date ?? input.startDate ? new Date(String(input.start_date ?? input.startDate)) : null,
+    end_date: input.end_date ?? input.endDate ? new Date(String(input.end_date ?? input.endDate)) : null,
+    is_active: input.is_active === undefined && input.isActive === undefined ? true : Boolean(input.is_active ?? input.isActive),
+    created_by: adminId || Number(input.created_by),
+  }
+}
+export const createEvent = (adminId: number, input: Record<string, unknown>) => prisma.couponEvent.create({ data: eventData(input, adminId), include: { coupon: true } })
+export const updateEvent = (id: string, input: Record<string, unknown>) => { const data = eventData(input); delete (data as any).created_by; return prisma.couponEvent.update({ where: { id }, data, include: { coupon: true } }) }
+export const deleteEvent = (id: string) => prisma.couponEvent.delete({ where: { id } })
+
+export async function distributionRecords(query: Record<string, unknown>) {
+  const page = Math.max(1, Number(query.page) || 1), pageSize = Math.min(500, Math.max(1, Number(query.pageSize ?? query.page_size) || 20))
+  const where: Prisma.UserCouponWhereInput = {
+    source_event_id: { not: null },
+    ...(query.user_id ? { user_id: Number(query.user_id) } : {}),
+    ...(query.coupon_id ? { coupon_id: String(query.coupon_id) } : {}),
+    ...(query.start_date || query.end_date ? { created_at: { ...(query.start_date ? { gte: new Date(String(query.start_date)) } : {}), ...(query.end_date ? { lte: new Date(String(query.end_date)) } : {}) } } : {}),
+  }
+  const [list, total] = await prisma.$transaction([
+    prisma.userCoupon.findMany({ where, include: { coupon: true, user: { select: { id: true, nickname: true, phone: true } } }, orderBy: { created_at: 'desc' }, skip: (page - 1) * pageSize, take: pageSize }),
+    prisma.userCoupon.count({ where }),
+  ])
+  return { list, total, page, pageSize }
+}
+export const manualTrigger = (input: Record<string, unknown>) => triggerCouponDistribution(input.date ? new Date(String(input.date)) : new Date())

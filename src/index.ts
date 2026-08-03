@@ -35,6 +35,7 @@ import adminCouponRouter from "./routes/adminCoupon.routes";
 import { websocketService } from "./services/websocket.service";
 import { timeoutService } from "./services/timeout.service";
 import { scheduledTaskService } from "./services/scheduledTask.service";
+import { couponSchedulerService } from "./services/couponScheduler.service";
 import swaggerUi from "swagger-ui-express";
 
 const prisma = new PrismaClient();
@@ -295,6 +296,7 @@ websocketService.start(server);
 if (process.env.NODE_ENV !== "test") {
   // 注册系统定时任务
   scheduledTaskService.start();
+  couponSchedulerService.start();
   timeoutService.start();
 }
 

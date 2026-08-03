@@ -1,4 +1,5 @@
 import { Prisma, PrismaClient, Role } from "@prisma/client";
+import { parseIdCard } from "../utils/idCard";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { approveRunnerAuth } from "./admin.service";
@@ -19,6 +20,8 @@ type RegisterInput = {
   phone: string;
   password: string;
   nickname: string;
+  birth_date?: string;
+  id_card?: string;
 };
 
 type VerificationCodeRecord = { code: string; expiresAt: number; sentAt: number; verifiedAt?: number };
@@ -153,6 +156,12 @@ export class AuthService {
     const phone = input.phone?.trim();
     const password = input.password ?? "";
     const nickname = input.nickname?.trim();
+    const idCard = input.id_card?.trim().toUpperCase() || undefined;
+    const parsedIdCard = idCard ? parseIdCard(idCard) : null;
+    if (idCard && !parsedIdCard?.isValid) throw new AuthError(400, "身份证号格式或校验位不正确");
+    const explicitBirthDate = input.birth_date ? new Date(input.birth_date) : null;
+    if (explicitBirthDate && !Number.isFinite(explicitBirthDate.getTime())) throw new AuthError(400, "出生日期不合法");
+    const birthDate = explicitBirthDate || parsedIdCard?.birthDate || undefined;
 
     if (!student_id || !phone || !password || !nickname) {
       throw new AuthError(400, "student_id、phone、password、nickname 为必填");
@@ -190,6 +199,8 @@ export class AuthService {
             phone,
             nickname,
             password_hash: passwordHash,
+            birth_date: birthDate,
+            id_card: idCard,
           },
           select: { id: true, role: true },
         });

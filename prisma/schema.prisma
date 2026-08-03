@@ -81,16 +81,24 @@ enum CouponAction {
   ADMIN_GIVE
 }
 
+enum CouponTriggerType {
+  NEW_USER
+  BIRTHDAY
+  HOLIDAY
+}
+
 model User {
-  id            Int     @id @default(autoincrement())
-  student_id    String? @unique
-  phone         String? @unique
+  id            Int       @id @default(autoincrement())
+  student_id    String?   @unique
+  phone         String?   @unique
   password_hash String?
   nickname      String?
   avatar        String?
-  role          Role    @default(USER)
-  status        Int     @default(1)
-  credit_score  Int     @default(0)
+  role          Role      @default(USER)
+  status        Int       @default(1)
+  credit_score  Int       @default(0)
+  birth_date    DateTime? @db.Date
+  id_card       String?   @db.VarChar(18)
 
   created_at DateTime @default(now())
   updated_at DateTime @default(now()) @updatedAt
@@ -122,6 +130,7 @@ model User {
   coupons_created        Coupon[]              @relation("CouponCreator")
   user_coupons           UserCoupon[]
   coupon_logs            CouponLog[]
+  coupon_events_created  CouponEvent[]         @relation("CouponEventCreator")
 
   @@map("users")
 }
@@ -596,10 +605,15 @@ model Coupon {
   created_by       Int
   created_at       DateTime     @default(now())
   updated_at       DateTime     @default(now()) @updatedAt
+  discount_type    String?      @db.VarChar(32)
+  discount_value   Decimal?     @db.Decimal(12, 2)
+  min_amount       Decimal?     @db.Decimal(12, 2)
+  validity_days    Int          @default(30)
 
-  creator      User         @relation("CouponCreator", fields: [created_by], references: [id], onDelete: Restrict)
+  creator      User          @relation("CouponCreator", fields: [created_by], references: [id], onDelete: Restrict)
   user_coupons UserCoupon[]
   logs         CouponLog[]
+  events       CouponEvent[]
 
   @@index([status, start_date, end_date])
   @@index([created_by])
@@ -607,14 +621,19 @@ model Coupon {
 }
 
 model UserCoupon {
-  id          String           @id @default(uuid())
-  user_id     Int
-  coupon_id   String
-  order_id    Int?             @unique
-  status      UserCouponStatus @default(UNUSED)
-  received_at DateTime         @default(now())
-  used_at     DateTime?
-  expired_at  DateTime
+  id               String           @id @default(uuid())
+  user_id          Int
+  coupon_id        String
+  order_id         Int?             @unique
+  status           UserCouponStatus @default(UNUSED)
+  received_at      DateTime         @default(now())
+  used_at          DateTime?
+  expired_at       DateTime
+  created_at       DateTime         @default(now())
+  used_order_id    Int?
+  claimed_at       DateTime?
+  source_event_id  String?
+  distribution_key String?          @unique @db.VarChar(191)
 
   user   User   @relation(fields: [user_id], references: [id], onDelete: Cascade)
   coupon Coupon @relation(fields: [coupon_id], references: [id], onDelete: Cascade)
@@ -623,7 +642,27 @@ model UserCoupon {
 
   @@index([user_id, status, expired_at])
   @@index([coupon_id, status])
+  @@index([user_id, claimed_at])
   @@map("user_coupons")
+}
+
+model CouponEvent {
+  id           String            @id @default(uuid())
+  coupon_id    String
+  trigger_type CouponTriggerType
+  start_date   DateTime?
+  end_date     DateTime?
+  is_active    Boolean           @default(true)
+  created_by   Int
+  created_at   DateTime          @default(now())
+  updated_at   DateTime          @default(now()) @updatedAt
+
+  coupon  Coupon @relation(fields: [coupon_id], references: [id], onDelete: Cascade)
+  creator User   @relation("CouponEventCreator", fields: [created_by], references: [id], onDelete: Restrict)
+
+  @@index([trigger_type, is_active, start_date, end_date])
+  @@index([coupon_id])
+  @@map("coupon_events")
 }
 
 model CouponLog {

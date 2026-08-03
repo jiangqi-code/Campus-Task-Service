@@ -22,6 +22,8 @@ type UpdateProfileInput = {
   nickname?: string | null;
   avatar?: string | null;
   phone?: string | null;
+  birth_date?: Date | null;
+  id_card?: string | null;
 };
 
 export const updateProfile = async (input: UpdateProfileInput) => {
@@ -29,7 +31,7 @@ export const updateProfile = async (input: UpdateProfileInput) => {
     throw new UserError(400, "userId 不合法");
   }
 
-  const hasAnyField = input.nickname !== undefined || input.avatar !== undefined || input.phone !== undefined;
+  const hasAnyField = input.nickname !== undefined || input.avatar !== undefined || input.phone !== undefined || input.birth_date !== undefined || input.id_card !== undefined;
   if (!hasAnyField) {
     throw new UserError(400, "至少需要修改一个字段");
   }
@@ -38,14 +40,14 @@ export const updateProfile = async (input: UpdateProfileInput) => {
     const result = await prisma.$transaction(async (tx: any) => {
       const user = await tx.user.findUnique({
         where: { id: input.userId },
-        select: { id: true, status: true, nickname: true, phone: true, avatar: true, student_id: true, role: true, credit_score: true },
+        select: { id: true, status: true, nickname: true, phone: true, avatar: true, student_id: true, role: true, credit_score: true, birth_date: true, id_card: true },
       });
 
       if (!user || user.status === -1) {
         throw new UserError(404, "用户不存在");
       }
 
-      const nextData: { nickname?: string | null; phone?: string | null; avatar?: string | null } = {};
+      const nextData: { nickname?: string | null; phone?: string | null; avatar?: string | null; birth_date?: Date | null; id_card?: string | null } = {};
       const changes: Record<string, { from: unknown; to: unknown }> = {};
 
       if (input.nickname !== undefined && input.nickname !== user.nickname) {
@@ -68,6 +70,14 @@ export const updateProfile = async (input: UpdateProfileInput) => {
         }
         nextData.phone = input.phone;
         changes.phone = { from: user.phone ?? null, to: input.phone ?? null };
+      }
+      if (input.birth_date !== undefined) {
+        nextData.birth_date = input.birth_date;
+        changes.birth_date = { from: user.birth_date ?? null, to: input.birth_date ?? null };
+      }
+      if (input.id_card !== undefined && input.id_card !== user.id_card) {
+        nextData.id_card = input.id_card;
+        changes.id_card = { from: user.id_card ?? null, to: input.id_card ?? null };
       }
 
       if (!Object.keys(nextData).length) {
@@ -174,7 +184,7 @@ export const getUserInfo = async (input: GetUserInfoInput) => {
 
   const user = await prisma.user.findUnique({
     where: { id: input.userId },
-    select: { id: true, nickname: true, phone: true, avatar: true, status: true, credit_score: true },
+    select: { id: true, nickname: true, phone: true, avatar: true, status: true, credit_score: true, birth_date: true, id_card: true },
   });
 
   if (!user || user.status === -1) {

@@ -28,11 +28,13 @@ export const verifyCode: RequestHandler = async (req, res, next) => {
 
 export const register: RequestHandler = async (req, res, next) => {
   try {
-    const { student_id, phone, password, nickname } = req.body as Partial<{
+    const { student_id, phone, password, nickname, birth_date, id_card } = req.body as Partial<{
       student_id: string;
       phone: string;
       password: string;
       nickname: string;
+      birth_date: string;
+      id_card: string;
     }>;
 
     const result = await authService.register({
@@ -40,6 +42,8 @@ export const register: RequestHandler = async (req, res, next) => {
       phone: phone ?? "",
       password: password ?? "",
       nickname: nickname ?? "",
+      birth_date,
+      id_card,
     });
 
     res.status(201).json(result);
