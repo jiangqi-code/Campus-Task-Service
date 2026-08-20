@@ -45,6 +45,7 @@ type ListTaskInput = {
   type?: string;
   status?: string;
   sort?: string;
+  sortOrder?: string;
   lat?: number;
   lng?: number;
 };
@@ -385,12 +386,16 @@ export class TaskService {
         };
       });
 
-      return { page, pageSize, total, items: normalizedItems };
+      return { page, pageSize, total, items: normalizedItems, list: normalizedItems };
     }
 
+    const orderBy: Prisma.TaskOrderByWithRelationInput =
+      input.sort === "reward"
+        ? { fee_total: input.sortOrder === "asc" ? "asc" : "desc" }
+        : { created_at: "desc" };
     const [total, items] = await Promise.all([
       prisma.task.count({ where }),
-      prisma.task.findMany({ where, orderBy: { created_at: "desc" }, skip, take: pageSize }),
+      prisma.task.findMany({ where, orderBy, skip, take: pageSize }),
     ]);
 
     return {
@@ -398,6 +403,7 @@ export class TaskService {
       pageSize,
       total,
       items,
+      list: items,
     };
   }
 

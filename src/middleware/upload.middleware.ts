@@ -7,9 +7,8 @@ import multer from "multer";
 const uploadsDir = path.join(process.cwd(), "uploads");
 
 const ensureUploadsDir = () => {
-  if (!fs.existsSync(uploadsDir)) {
-    fs.mkdirSync(uploadsDir, { recursive: true });
-  }
+  fs.mkdirSync(uploadsDir, { recursive: true });
+  fs.accessSync(uploadsDir, fs.constants.R_OK | fs.constants.W_OK);
 };
 
 const allowedMimeTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
@@ -34,7 +33,7 @@ const fileFilter = (_req: unknown, file: MulterFileLike, cb: FileFilterCb) => {
     cb(null, true);
     return;
   }
-  cb(new Error("Invalid file type"));
+  cb(new Error("仅支持 JPG、PNG、WebP 图片"));
 };
 
 const diskStorage = multer.diskStorage({
@@ -52,7 +51,7 @@ const imageUpload = multer({
   storage: diskStorage,
   fileFilter,
   limits: {
-    fileSize: 5 * 1024 * 1024,
+    fileSize: 10 * 1024 * 1024,
     files: 3,
   },
 });
@@ -78,7 +77,10 @@ export const uploadImage: RequestHandler = (req, res, next) => {
     }
 
     if (err instanceof multer.MulterError) {
-      res.status(400).json({ error: err.code });
+      const tooLarge = err.code === "LIMIT_FILE_SIZE";
+      res.status(tooLarge ? 413 : 400).json({
+        error: tooLarge ? "图片不能超过 10MB" : `图片上传失败：${err.code}`,
+      });
       return;
     }
 
@@ -94,7 +96,10 @@ export const uploadAvatar: RequestHandler = (req, res, next) => {
     }
 
     if (err instanceof multer.MulterError) {
-      res.status(400).json({ error: err.code });
+      const tooLarge = err.code === "LIMIT_FILE_SIZE";
+      res.status(tooLarge ? 413 : 400).json({
+        error: tooLarge ? "头像不能超过 2MB" : `头像上传失败：${err.code}`,
+      });
       return;
     }
 
@@ -103,8 +108,14 @@ export const uploadAvatar: RequestHandler = (req, res, next) => {
 };
 
 export const ensureUploadsDirExists: RequestHandler = (_req, _res, next) => {
-  ensureUploadsDir();
-  next();
+  try {
+    ensureUploadsDir();
+    next();
+  } catch {
+    const error = new Error("上传目录不可写，请检查服务器目录权限");
+    (error as Error & { statusCode?: number }).statusCode = 500;
+    next(error);
+  }
 };
 
 export { uploadsDir, extFromMimeType, createFilename };

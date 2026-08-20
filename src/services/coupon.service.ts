@@ -33,9 +33,34 @@ function calculateDiscount(coupon: { type: CouponType; value: Prisma.Decimal; mi
 }
 
 async function expireUserCoupons(userId?: number) {
-  await prisma.userCoupon.updateMany({
-    where: { ...(userId ? { user_id: userId } : {}), status: UserCouponStatus.UNUSED, expired_at: { lt: new Date() } },
-    data: { status: UserCouponStatus.EXPIRED },
+  const now = new Date()
+  await prisma.$transaction(async (tx) => {
+    const rows = await tx.userCoupon.findMany({
+      where: {
+        ...(userId ? { user_id: userId } : {}),
+        status: UserCouponStatus.UNUSED,
+        OR: [
+          { expired_at: { lte: now } },
+          { coupon: { is: { status: { not: CouponStatus.ACTIVE } } } },
+          { coupon: { is: { start_date: { gt: now } } } },
+          { coupon: { is: { end_date: { lte: now } } } },
+        ],
+      },
+      select: { id: true, user_id: true, coupon_id: true },
+    })
+    if (!rows.length) return
+    await tx.userCoupon.updateMany({
+      where: { id: { in: rows.map((row) => row.id) }, status: UserCouponStatus.UNUSED },
+      data: { status: UserCouponStatus.EXPIRED },
+    })
+    await tx.couponLog.createMany({
+      data: rows.map((row) => ({
+        user_id: row.user_id,
+        coupon_id: row.coupon_id,
+        action: CouponAction.EXPIRE,
+        detail: { userCouponId: row.id },
+      })),
+    })
   })
 }
 
@@ -171,16 +196,38 @@ export async function claimCoupons(userId: number, input: Record<string, unknown
   return prisma.$transaction(async tx => {
     const rows = await tx.userCoupon.findMany({ where: { id: { in: ids }, user_id: userId, claimed_at: null, status: UserCouponStatus.UNUSED, expired_at: { gt: new Date() } }, include: { coupon: true } })
     if (!rows.length) throw new CouponError(409, '优惠券不存在、已领取或已过期')
-    await tx.userCoupon.updateMany({ where: { id: { in: rows.map(v => v.id) }, user_id: userId, claimed_at: null }, data: { claimed_at: new Date() } })
-    return rows.map(v => ({ ...v, claimed_at: new Date() }))
+    const claimedAt = new Date()
+    await tx.userCoupon.updateMany({ where: { id: { in: rows.map(v => v.id) }, user_id: userId, claimed_at: null }, data: { claimed_at: claimedAt } })
+    await tx.couponLog.createMany({
+      data: rows.map((row) => ({
+        user_id: userId,
+        coupon_id: row.coupon_id,
+        action: CouponAction.RECEIVE,
+        detail: { userCouponId: row.id },
+      })),
+    })
+    return rows.map(v => ({ ...v, claimed_at: claimedAt }))
   })
 }
 
 export async function listUsable(userId: number, query: Record<string, unknown>) {
   await expireUserCoupons(userId)
   const amount = Number(query.orderAmount ?? query.order_amount ?? query.amount ?? 0)
+  const now = new Date()
   const rows = await prisma.userCoupon.findMany({
-    where: { user_id: userId, claimed_at: { not: null }, status: UserCouponStatus.UNUSED, expired_at: { gt: new Date() } },
+    where: {
+      user_id: userId,
+      claimed_at: { not: null },
+      status: UserCouponStatus.UNUSED,
+      expired_at: { gt: now },
+      coupon: {
+        is: {
+          status: CouponStatus.ACTIVE,
+          start_date: { lte: now },
+          end_date: { gt: now },
+        },
+      },
+    },
     include: { coupon: true },
     orderBy: { expired_at: 'asc' },
   })

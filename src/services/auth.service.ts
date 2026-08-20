@@ -165,6 +165,14 @@ export class AuthService {
     const rawBirthDate = input.birth_date ?? input.birthDate;
     const explicitBirthDate = rawBirthDate ? new Date(rawBirthDate) : null;
     if (explicitBirthDate && !Number.isFinite(explicitBirthDate.getTime())) throw new AuthError(400, "出生日期不合法");
+    if (explicitBirthDate && explicitBirthDate > new Date()) throw new AuthError(400, "出生日期不能晚于今天");
+    if (
+      explicitBirthDate &&
+      parsedIdCard?.birthDate &&
+      explicitBirthDate.toISOString().slice(0, 10) !== parsedIdCard.birthDate.toISOString().slice(0, 10)
+    ) {
+      throw new AuthError(400, "出生日期与身份证号不一致");
+    }
     const birthDate = parsedIdCard?.birthDate || explicitBirthDate || undefined;
 
     if (!student_id || !phone || !password || !nickname) {

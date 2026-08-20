@@ -87,7 +87,7 @@ export const updateProfile = async (input: UpdateProfileInput) => {
       const updated = await tx.user.update({
         where: { id: input.userId },
         data: nextData,
-        select: { id: true, student_id: true, phone: true, nickname: true, avatar: true, role: true, credit_score: true },
+        select: { id: true, student_id: true, phone: true, nickname: true, avatar: true, role: true, credit_score: true, birth_date: true, id_card: true },
       });
 
       await tx.adminLog.create({

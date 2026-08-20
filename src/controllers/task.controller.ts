@@ -99,10 +99,17 @@ export const list: RequestHandler = async (req, res, next) => {
   try {
     const result = await taskService.getTaskList({
       page: req.query.page ? Number(req.query.page) : undefined,
-      pageSize: req.query.pageSize ? Number(req.query.pageSize) : undefined,
-      type: typeof req.query.type === "string" ? req.query.type : undefined,
+      pageSize: req.query.pageSize || req.query.page_size
+        ? Number(req.query.pageSize ?? req.query.page_size)
+        : undefined,
+      type: typeof (req.query.type ?? req.query.task_type) === "string"
+        ? String(req.query.type ?? req.query.task_type)
+        : undefined,
       status: typeof req.query.status === "string" ? req.query.status : undefined,
-      sort: typeof req.query.sort === "string" ? req.query.sort : undefined,
+      sort: typeof (req.query.sort ?? req.query.sort_by) === "string"
+        ? String(req.query.sort ?? req.query.sort_by)
+        : undefined,
+      sortOrder: typeof req.query.sort_order === "string" ? req.query.sort_order : undefined,
       lat: req.query.lat !== undefined ? Number(req.query.lat) : undefined,
       lng: req.query.lng !== undefined ? Number(req.query.lng) : undefined,
     });
