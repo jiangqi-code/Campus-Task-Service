@@ -212,7 +212,10 @@ export async function claimCoupons(userId: number, input: Record<string, unknown
 
 export async function listUsable(userId: number, query: Record<string, unknown>) {
   await expireUserCoupons(userId)
-  const amount = Number(query.orderAmount ?? query.order_amount ?? query.amount ?? 0)
+  const rawAmount = query.amount ?? query.orderAmount ?? query.order_amount
+  const hasAmount = rawAmount !== undefined && rawAmount !== null && String(rawAmount).trim() !== ''
+  const amount = hasAmount ? Number(rawAmount) : null
+  if (amount !== null && (!Number.isFinite(amount) || amount < 0)) throw new CouponError(400, '订单金额不合法')
   const now = new Date()
   const rows = await prisma.userCoupon.findMany({
     where: {
@@ -231,7 +234,7 @@ export async function listUsable(userId: number, query: Record<string, unknown>)
     include: { coupon: true },
     orderBy: { expired_at: 'asc' },
   })
-  return rows.filter(v => !amount || Number(v.coupon.min_order_amount) <= amount)
+  return amount === null ? rows : rows.filter(v => Number(v.coupon.min_order_amount) <= amount)
 }
 
 export async function welcomeCoupons(userId: number) {

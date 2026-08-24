@@ -10,7 +10,7 @@ import {
   UserError,
   updateProfile as updateProfileService,
 } from "../services/user.service";
-import { parseIdCard } from "../utils/idCard";
+import { parseBirthDate, parseIdCard } from "../utils/idCard";
 
 const prisma = new PrismaClient();
 
@@ -130,15 +130,19 @@ export const updateProfile: RequestHandler = async (req, res, next) => {
       return;
     }
 
-    const { nickname, phone, avatar, birth_date, id_card } = req.body as Partial<{
+    const { nickname, phone, avatar, birth_date, id_card, birthDate, idCard } = req.body as Partial<{
       nickname: unknown;
       phone: unknown;
       avatar: unknown;
       birth_date: unknown;
       id_card: unknown;
+      birthDate: unknown;
+      idCard: unknown;
     }>;
 
-    const hasAnyField = nickname !== undefined || phone !== undefined || avatar !== undefined || birth_date !== undefined || id_card !== undefined;
+    const hasBirthDate = birth_date !== undefined || birthDate !== undefined;
+    const hasIdCard = id_card !== undefined || idCard !== undefined;
+    const hasAnyField = nickname !== undefined || phone !== undefined || avatar !== undefined || hasBirthDate || hasIdCard;
     if (!hasAnyField) {
       res.status(400).json({ error: "至少需要修改一个字段" });
       return;
@@ -164,11 +168,13 @@ export const updateProfile: RequestHandler = async (req, res, next) => {
     const normalizedNickname = nickname === undefined ? undefined : (trimmedNickname ? trimmedNickname : null);
     const normalizedPhone = phone === undefined ? undefined : (trimmedPhone ? trimmedPhone : null);
     const normalizedAvatar = avatar === undefined ? undefined : (trimmedAvatar ? trimmedAvatar : null);
-    const normalizedIdCard = id_card === undefined ? undefined : String(id_card || '').trim().toUpperCase() || null;
+    const rawIdCard = id_card ?? idCard;
+    const normalizedIdCard = hasIdCard ? String(rawIdCard || '').trim().toUpperCase() || null : undefined;
     const parsed = normalizedIdCard ? parseIdCard(normalizedIdCard) : null;
     if (normalizedIdCard && !parsed?.isValid) return void res.status(400).json({ error: "身份证号格式或校验位不正确" });
-    const normalizedBirthDate = birth_date === undefined ? (parsed?.birthDate ?? undefined) : (birth_date ? new Date(String(birth_date)) : null);
-    if (normalizedBirthDate instanceof Date && !Number.isFinite(normalizedBirthDate.getTime())) return void res.status(400).json({ error: "出生日期不合法" });
+    const rawBirthDate = birth_date ?? birthDate;
+    const normalizedBirthDate = parsed?.birthDate ?? (hasBirthDate ? (rawBirthDate ? parseBirthDate(rawBirthDate) : null) : undefined);
+    if (hasBirthDate && rawBirthDate && !normalizedBirthDate) return void res.status(400).json({ error: "出生日期不合法" });
 
     const updated = await updateProfileService({
       userId: user.id,
@@ -241,14 +247,14 @@ export const getUserInfo: RequestHandler = async (req, res, next) => {
       return;
     }
 
-    const rawUserId = req.params.userId;
-    const userId = Number.parseInt(rawUserId, 10);
-    if (!Number.isFinite(userId) || String(userId) !== rawUserId.trim()) {
+    const rawUserId = req.params.userId.trim();
+    const userId = rawUserId === "me" ? user.id : Number.parseInt(rawUserId, 10);
+    if (!Number.isFinite(userId) || (rawUserId !== "me" && String(userId) !== rawUserId)) {
       next();
       return;
     }
 
-    const result = await getUserInfoService({ userId });
+    const result = await getUserInfoService({ userId, requesterId: user.id });
     res.status(200).json(result);
   } catch (err) {
     if (err instanceof UserError) {

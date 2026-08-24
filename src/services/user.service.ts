@@ -175,6 +175,7 @@ export const switchRole = async (input: SwitchRoleInput) => {
 
 type GetUserInfoInput = {
   userId: number;
+  requesterId?: number;
 };
 
 export const getUserInfo = async (input: GetUserInfoInput) => {
@@ -184,18 +185,28 @@ export const getUserInfo = async (input: GetUserInfoInput) => {
 
   const user = await prisma.user.findUnique({
     where: { id: input.userId },
-    select: { id: true, nickname: true, phone: true, avatar: true, status: true, credit_score: true, birth_date: true, id_card: true },
+    select: { id: true, student_id: true, nickname: true, phone: true, avatar: true, role: true, status: true, credit_score: true, birth_date: true, id_card: true },
   });
 
   if (!user || user.status === -1) {
     throw new UserError(404, "用户不存在");
   }
 
-  return {
+  const result: Record<string, unknown> = {
     id: user.id,
     nickname: user.nickname,
     phone: user.phone,
     avatar: user.avatar,
     credit_score: user.credit_score ?? 0,
   };
+  if (input.requesterId === user.id) {
+    Object.assign(result, {
+      student_id: user.student_id,
+      role: user.role,
+      status: user.status,
+      birth_date: user.birth_date,
+      id_card: user.id_card,
+    });
+  }
+  return result;
 };

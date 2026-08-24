@@ -1,5 +1,5 @@
 import { Prisma, PrismaClient, Role } from "@prisma/client";
-import { parseIdCard } from "../utils/idCard";
+import { formatBirthDate, parseBirthDate, parseIdCard } from "../utils/idCard";
 import { issueWelcomeCouponsForUser } from "./couponAutomation.service";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
@@ -163,13 +163,12 @@ export class AuthService {
     const parsedIdCard = idCard ? parseIdCard(idCard) : null;
     if (idCard && !parsedIdCard?.isValid) throw new AuthError(400, "身份证号格式或校验位不正确");
     const rawBirthDate = input.birth_date ?? input.birthDate;
-    const explicitBirthDate = rawBirthDate ? new Date(rawBirthDate) : null;
-    if (explicitBirthDate && !Number.isFinite(explicitBirthDate.getTime())) throw new AuthError(400, "出生日期不合法");
-    if (explicitBirthDate && explicitBirthDate > new Date()) throw new AuthError(400, "出生日期不能晚于今天");
+    const explicitBirthDate = rawBirthDate ? parseBirthDate(rawBirthDate) : null;
+    if (rawBirthDate && !explicitBirthDate) throw new AuthError(400, "出生日期不合法");
     if (
       explicitBirthDate &&
       parsedIdCard?.birthDate &&
-      explicitBirthDate.toISOString().slice(0, 10) !== parsedIdCard.birthDate.toISOString().slice(0, 10)
+      formatBirthDate(explicitBirthDate) !== formatBirthDate(parsedIdCard.birthDate)
     ) {
       throw new AuthError(400, "出生日期与身份证号不一致");
     }
@@ -307,8 +306,12 @@ export class AuthService {
         student_id: true,
         phone: true,
         nickname: true,
+        avatar: true,
         role: true,
+        status: true,
         credit_score: true,
+        birth_date: true,
+        id_card: true,
       },
     });
 
