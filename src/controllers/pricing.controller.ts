@@ -13,7 +13,14 @@ const toNumberOrNull = (value: unknown) => {
 export const calculate: RequestHandler = async (req, res, next) => {
   try {
     const body = (req as any).body ?? {};
-    const distanceKm = toNumberOrNull(body.distanceKm ?? body.distance_km ?? body.distance);
+    const rawDistanceKm = body.distanceKm ?? body.distance_km ?? body.distance;
+    const distanceKm =
+      rawDistanceKm === undefined || rawDistanceKm === null
+        ? (() => {
+            const distanceMeters = toNumberOrNull(body.distance_meters ?? body.distanceMeters);
+            return distanceMeters === null ? null : distanceMeters / 1000;
+          })()
+        : toNumberOrNull(rawDistanceKm);
     const timeSlot = normalizeTimeSlot(body.timeSlot ?? body.time_slot ?? body.period);
     const weather = normalizeWeather(body.weather);
     const urgency = toNumberOrNull(body.urgency ?? body.urgent ?? body.emergency) ?? 0;
