@@ -270,18 +270,58 @@ export async function listEvents(query: Record<string, unknown>) {
 
 function eventData(input: Record<string, unknown>, adminId?: number): Prisma.CouponEventUncheckedCreateInput {
   const trigger = String(input.trigger_type ?? input.triggerType ?? '') as CouponTriggerType
+  const couponId = String(input.coupon_id ?? input.couponId ?? '').trim()
+  const startDate = eventDate(input.start_date ?? input.startDate)
+  const endDate = eventDate(input.end_date ?? input.endDate, true)
   if (!Object.values(CouponTriggerType).includes(trigger)) throw new CouponError(400, '发放触发类型不合法')
+  if (!couponId) throw new CouponError(400, '请选择优惠券')
+  if ((input.start_date ?? input.startDate) && !startDate) throw new CouponError(400, '开始日期不合法')
+  if ((input.end_date ?? input.endDate) && !endDate) throw new CouponError(400, '结束日期不合法')
+  if (startDate && endDate && endDate < startDate) throw new CouponError(400, '结束日期不能早于开始日期')
   return {
-    coupon_id: String(input.coupon_id ?? input.couponId ?? ''),
+    coupon_id: couponId,
     trigger_type: trigger,
-    start_date: input.start_date ?? input.startDate ? new Date(String(input.start_date ?? input.startDate)) : null,
-    end_date: input.end_date ?? input.endDate ? new Date(String(input.end_date ?? input.endDate)) : null,
+    start_date: startDate,
+    end_date: endDate,
     is_active: input.is_active === undefined && input.isActive === undefined ? true : Boolean(input.is_active ?? input.isActive),
     created_by: adminId || Number(input.created_by),
   }
 }
-export const createEvent = (adminId: number, input: Record<string, unknown>) => prisma.couponEvent.create({ data: eventData(input, adminId), include: { coupon: true } })
-export const updateEvent = (id: string, input: Record<string, unknown>) => { const data = eventData(input); delete (data as any).created_by; return prisma.couponEvent.update({ where: { id }, data, include: { coupon: true } }) }
+
+function eventDate(input: unknown, endOfDay = false) {
+  if (input === undefined || input === null || input === '') return null
+  const raw = String(input).trim()
+  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw)
+  if (dateOnly) {
+    const [, year, month, day] = dateOnly
+    const date = new Date(Number(year), Number(month) - 1, Number(day), endOfDay ? 23 : 0, endOfDay ? 59 : 0, endOfDay ? 59 : 0, endOfDay ? 999 : 0)
+    return Number.isFinite(date.getTime()) ? date : null
+  }
+  const date = new Date(raw)
+  return Number.isFinite(date.getTime()) ? date : null
+}
+
+async function ensureEventCoupon(couponId: string) {
+  const coupon = await prisma.coupon.findUnique({
+    where: { id: couponId },
+    select: { id: true, status: true },
+  })
+  if (!coupon) throw new CouponError(404, '优惠券不存在')
+  if (coupon.status !== CouponStatus.ACTIVE) throw new CouponError(400, '仅可为启用中的优惠券配置发放规则')
+}
+
+export async function createEvent(adminId: number, input: Record<string, unknown>) {
+  const data = eventData(input, adminId)
+  await ensureEventCoupon(data.coupon_id)
+  return prisma.couponEvent.create({ data, include: { coupon: true } })
+}
+
+export async function updateEvent(id: string, input: Record<string, unknown>) {
+  const data = eventData(input)
+  delete (data as any).created_by
+  await ensureEventCoupon(data.coupon_id)
+  return prisma.couponEvent.update({ where: { id }, data, include: { coupon: true } })
+}
 export const deleteEvent = (id: string) => prisma.couponEvent.delete({ where: { id } })
 
 export async function distributionRecords(query: Record<string, unknown>) {
@@ -298,4 +338,4 @@ export async function distributionRecords(query: Record<string, unknown>) {
   ])
   return { list, total, page, pageSize }
 }
-export const manualTrigger = (input: Record<string, unknown>) => triggerCouponDistribution(input.date ? new Date(String(input.date)) : new Date())
+export const manualTrigger = (input: Record<string, unknown>) => triggerCouponDistribution(eventDate(input.date) || new Date())

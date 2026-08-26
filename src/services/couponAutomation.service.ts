@@ -88,11 +88,12 @@ export async function issueWelcomeCouponsForUser(tx: Prisma.TransactionClient, u
   const user = await tx.user.findUnique({ where: { id: userId }, select: { created_at: true, status: true } })
   if (!user || user.status !== 1 || date.getTime() - user.created_at.getTime() > welcomeWindowMs) return []
 
+  const { start, end } = dayBounds(date)
   const events = await tx.couponEvent.findMany({
     where: {
       trigger_type: CouponTriggerType.NEW_USER,
       is_active: true,
-      AND: [{ OR: [{ start_date: null }, { start_date: { lte: date } }] }, { OR: [{ end_date: null }, { end_date: { gt: date } }] }],
+      AND: [{ OR: [{ start_date: null }, { start_date: { lte: end } }] }, { OR: [{ end_date: null }, { end_date: { gte: start } }] }],
       coupon: { status: CouponStatus.ACTIVE, start_date: { lte: date }, end_date: { gt: date } },
     },
     include: { coupon: true },

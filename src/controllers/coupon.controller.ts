@@ -1,5 +1,5 @@
 import type { RequestHandler } from 'express'
-import { adminList, applyCoupon, checkCode, checkNotification, claimCoupons, CouponError, createCoupon, createEvent, deleteCoupon, deleteEvent, distributionRecords, giveCoupon, listEvents, listMine, listUsable, manualTrigger, receiveCoupon, updateCoupon, updateEvent, usage, useCoupon, welcomeCoupons } from '../services/coupon.service'
+import { adminList, applyCoupon, checkCode, checkNotification, claimCoupons, CouponError, createCoupon, createEvent, deleteCoupon, deleteEvent, distributionRecords, giveCoupon, listAvailable, listEvents, listMine, listUsable, manualTrigger, receiveCoupon, updateCoupon, updateEvent, usage, useCoupon, welcomeCoupons } from '../services/coupon.service'
 
 const ok = (res: any, data: unknown, message = 'success', status = 200) => res.status(status).json({ code: 0, message, data })
 const handler = (fn: (req: any) => Promise<unknown>, message = 'success', status = 200): RequestHandler => async (req, res, next) => {
@@ -10,7 +10,7 @@ const handler = (fn: (req: any) => Promise<unknown>, message = 'success', status
 const userId = (req: any) => { if (!req.user) throw new CouponError(401, 'Unauthorized'); return req.user.id as number }
 const adminId = (req: any) => { if (!req.user || req.user.role !== 'ADMIN') throw new CouponError(403, 'Forbidden'); return req.user.id as number }
 
-export const available = handler((req) => listUsable(userId(req), req.query))
+export const available = handler((req) => listAvailable(userId(req)))
 export const mine = handler((req) => listMine(userId(req), req.query))
 export const receive = handler((req) => receiveCoupon(userId(req), String(req.params.couponId)), '领取成功', 201)
 export const apply = handler((req) => applyCoupon(userId(req), req.body || {}))
