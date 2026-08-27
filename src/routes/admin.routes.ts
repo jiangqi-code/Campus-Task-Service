@@ -31,6 +31,22 @@ import {
 import { getAuthList, auditAuth } from "../controllers/auth.controller";
 import { getAdminReportList, processAdminReport } from "../controllers/report.controller";
 import { getAdminComplaintList, processAdminComplaint } from "../controllers/complaint.controller";
+import {
+  auditForumPost,
+  createForumCategory,
+  deactivateForumCategory,
+  hideForumCommentByAdmin,
+  listAdminForumCategories,
+  listAdminForumComments,
+  listAdminForumPosts,
+  updateForumCategory,
+} from "../controllers/forum.controller";
+import {
+  auditFoodMerchant,
+  listAdminFoodMerchants,
+  listAdminFoodOrders,
+  updateFoodSettings,
+} from "../controllers/food.controller";
 
 const router = Router();
 router.get("/auth/list", requireAuth, getAuthList);
@@ -88,5 +104,21 @@ router.put("/config/:key", requireAuth, updateConfig);
 router.get("/sensitive-words", requireAuth, getSensitiveWords);
 router.post("/sensitive-words", requireAuth, addSensitiveWord);
 router.delete("/sensitive-words/:id", requireAuth, deleteSensitiveWord);
+
+// 信息发布广场：内容审核、分类与评论治理
+router.get("/forum/posts", requireAuth, requireRole("ADMIN"), listAdminForumPosts);
+router.put("/forum/posts/:postId/audit", requireAuth, requireRole("ADMIN"), auditForumPost);
+router.get("/forum/categories", requireAuth, requireRole("ADMIN"), listAdminForumCategories);
+router.post("/forum/categories", requireAuth, requireRole("ADMIN"), createForumCategory);
+router.put("/forum/categories/:categoryId", requireAuth, requireRole("ADMIN"), updateForumCategory);
+router.delete("/forum/categories/:categoryId", requireAuth, requireRole("ADMIN"), deactivateForumCategory);
+router.get("/forum/comments", requireAuth, requireRole("ADMIN"), listAdminForumComments);
+router.put("/forum/comments/:commentId/hide", requireAuth, requireRole("ADMIN"), hideForumCommentByAdmin);
+
+// 校园外卖：商家准入、订单跟踪与抽成设置
+router.get("/food/merchants", requireAuth, requireRole("ADMIN"), listAdminFoodMerchants);
+router.put("/food/merchants/:merchantId/audit", requireAuth, requireRole("ADMIN"), auditFoodMerchant);
+router.get("/food/orders", requireAuth, requireRole("ADMIN"), listAdminFoodOrders);
+router.put("/food/settings", requireAuth, requireRole("ADMIN"), updateFoodSettings);
 
 export default router;

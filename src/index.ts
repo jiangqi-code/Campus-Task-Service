@@ -32,6 +32,9 @@ import pricingRouter from "./routes/pricing.routes";
 import adminPricingRouter from "./routes/adminPricing.routes";
 import couponRouter from "./routes/coupon.routes";
 import adminCouponRouter from "./routes/adminCoupon.routes";
+import forumRouter from "./routes/forum.routes";
+import foodRouter from "./routes/food.routes";
+import membershipRouter from "./routes/membership.routes";
 import { websocketService } from "./services/websocket.service";
 import { timeoutService } from "./services/timeout.service";
 import { scheduledTaskService } from "./services/scheduledTask.service";
@@ -164,6 +167,9 @@ app.use("/api/pricing", pricingRouter);
 app.use("/api/admin/pricing", adminPricingRouter);
 app.use("/api/coupons", couponRouter);
 app.use("/api/admin/coupons", adminCouponRouter);
+app.use("/api/forum", forumRouter);
+app.use("/api/food", foodRouter);
+app.use("/api/membership", membershipRouter);
 
 
 const getMountPathFromRegexp = (regexp: any): string => {

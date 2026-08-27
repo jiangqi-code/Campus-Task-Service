@@ -368,97 +368,148 @@ export class AdminService {
     const activeStart = new Date(todayStart);
     activeStart.setDate(activeStart.getDate() - 6);
 
-    const [todayOrders, weekOrders, monthOrders, totalOrders] = await Promise.all([
+    // 跑腿和外卖共用同一张看板：保留旧字段，同时增加跨业务聚合字段，避免影响既有管理端调用。
+    const [
+      todayErrandOrders, weekErrandOrders, monthErrandOrders, totalErrandOrders,
+      todayFoodOrders, weekFoodOrders, monthFoodOrders, totalFoodOrders,
+      todayErrandAmountAgg, weekErrandAmountAgg, monthErrandAmountAgg, totalErrandAmountAgg,
+      todayFoodAmountAgg, weekFoodAmountAgg, monthFoodAmountAgg, totalFoodAmountAgg,
+      totalUsers, todayNewUsers, runnerCount,
+      recentErrandOrders, recentFoodOrders, recentForumPosts,
+      trendErrandOrders, trendFoodOrders,
+      recentTasks, recentFoodDeliveryOrders,
+    ] = await Promise.all([
       prisma.order.count({ where: { created_at: { gte: todayStart, lt: tomorrowStart } } }),
       prisma.order.count({ where: { created_at: { gte: weekStart, lt: nextWeekStart } } }),
       prisma.order.count({ where: { created_at: { gte: monthStart, lt: nextMonthStart } } }),
       prisma.order.count(),
-    ]);
-
-    const [todayAmountAgg, weekAmountAgg, monthAmountAgg, totalAmountAgg] = await Promise.all([
-      prisma.order.aggregate({
-        where: { status: OrderStatus.COMPLETED, complete_time: { gte: todayStart, lt: tomorrowStart } },
-        _sum: { final_price: true },
-      }),
-      prisma.order.aggregate({
-        where: { status: OrderStatus.COMPLETED, complete_time: { gte: weekStart, lt: nextWeekStart } },
-        _sum: { final_price: true },
-      }),
-      prisma.order.aggregate({
-        where: { status: OrderStatus.COMPLETED, complete_time: { gte: monthStart, lt: nextMonthStart } },
-        _sum: { final_price: true },
-      }),
-      prisma.order.aggregate({
-        where: { status: OrderStatus.COMPLETED },
-        _sum: { final_price: true },
-      }),
-    ]);
-
-    const todayAmount = todayAmountAgg._sum.final_price ?? new Prisma.Decimal(0);
-    const weekAmount = weekAmountAgg._sum.final_price ?? new Prisma.Decimal(0);
-    const monthAmount = monthAmountAgg._sum.final_price ?? new Prisma.Decimal(0);
-    const totalAmount = totalAmountAgg._sum.final_price ?? new Prisma.Decimal(0);
-
-    const [totalUsers, todayNewUsers] = await Promise.all([
+      prisma.foodOrder.count({ where: { created_at: { gte: todayStart, lt: tomorrowStart } } }),
+      prisma.foodOrder.count({ where: { created_at: { gte: weekStart, lt: nextWeekStart } } }),
+      prisma.foodOrder.count({ where: { created_at: { gte: monthStart, lt: nextMonthStart } } }),
+      prisma.foodOrder.count(),
+      prisma.order.aggregate({ where: { status: OrderStatus.COMPLETED, complete_time: { gte: todayStart, lt: tomorrowStart } }, _sum: { final_price: true } }),
+      prisma.order.aggregate({ where: { status: OrderStatus.COMPLETED, complete_time: { gte: weekStart, lt: nextWeekStart } }, _sum: { final_price: true } }),
+      prisma.order.aggregate({ where: { status: OrderStatus.COMPLETED, complete_time: { gte: monthStart, lt: nextMonthStart } }, _sum: { final_price: true } }),
+      prisma.order.aggregate({ where: { status: OrderStatus.COMPLETED }, _sum: { final_price: true } }),
+      prisma.foodOrder.aggregate({ where: { status: "COMPLETED", complete_time: { gte: todayStart, lt: tomorrowStart } }, _sum: { total_amount: true } }),
+      prisma.foodOrder.aggregate({ where: { status: "COMPLETED", complete_time: { gte: weekStart, lt: nextWeekStart } }, _sum: { total_amount: true } }),
+      prisma.foodOrder.aggregate({ where: { status: "COMPLETED", complete_time: { gte: monthStart, lt: nextMonthStart } }, _sum: { total_amount: true } }),
+      prisma.foodOrder.aggregate({ where: { status: "COMPLETED" }, _sum: { total_amount: true } }),
       prisma.user.count({ where: { status: { not: -1 } } }),
       prisma.user.count({ where: { status: { not: -1 }, created_at: { gte: todayStart, lt: tomorrowStart } } }),
+      prisma.user.count({ where: { status: 1, role: Role.RUNNER } }),
+      prisma.order.findMany({ where: { created_at: { gte: activeStart }, status: { not: OrderStatus.CANCELLED } }, select: { taker_id: true, task: { select: { publisher_id: true } } } }),
+      prisma.foodOrder.findMany({ where: { created_at: { gte: activeStart } }, select: { user_id: true, runner_id: true } }),
+      prisma.forumPost.findMany({ where: { created_at: { gte: activeStart } }, select: { author_id: true } }),
+      prisma.order.findMany({ where: { created_at: { gte: activeStart, lt: tomorrowStart } }, select: { created_at: true } }),
+      prisma.foodOrder.findMany({ where: { created_at: { gte: activeStart, lt: tomorrowStart } }, select: { created_at: true } }),
+      prisma.task.findMany({ where: { created_at: { gte: activeStart }, orders: { some: { status: { not: OrderStatus.CANCELLED } } } }, select: { pickup_address: true }, take: 200 }),
+      prisma.foodOrder.findMany({ where: { created_at: { gte: activeStart } }, select: { delivery_address: true }, take: 200 }),
     ]);
 
-    const activePublishers = await prisma.task.findMany({
-      where: { orders: { some: { created_at: { gte: activeStart }, status: { not: OrderStatus.CANCELLED } } } },
-      select: { publisher_id: true },
-      distinct: ["publisher_id"],
-    });
-    const activeUsers = activePublishers.length;
+    const zero = new Prisma.Decimal(0);
+    const addAmount = (left: Prisma.Decimal | null | undefined, right: Prisma.Decimal | null | undefined) => (left ?? zero).plus(right ?? zero);
+    const todayAmount = addAmount(todayErrandAmountAgg._sum.final_price, todayFoodAmountAgg._sum.total_amount);
+    const weekAmount = addAmount(weekErrandAmountAgg._sum.final_price, weekFoodAmountAgg._sum.total_amount);
+    const monthAmount = addAmount(monthErrandAmountAgg._sum.final_price, monthFoodAmountAgg._sum.total_amount);
+    const totalAmount = addAmount(totalErrandAmountAgg._sum.final_price, totalFoodAmountAgg._sum.total_amount);
+    const todayOrders = todayErrandOrders + todayFoodOrders;
+    const weekOrders = weekErrandOrders + weekFoodOrders;
+    const monthOrders = monthErrandOrders + monthFoodOrders;
+    const totalOrders = totalErrandOrders + totalFoodOrders;
 
-    const topEarningRows = await prisma.earning.groupBy({
-      by: ["user_id"],
-      where: { type: "ORDER", status: "SETTLED" },
-      _sum: { amount: true },
-      orderBy: { _sum: { amount: "desc" } },
-      take: 10,
-    });
-
-    const topUserIds = topEarningRows.map((r) => r.user_id);
-
-    const [topUsers, completedRows] = await Promise.all([
-      topUserIds.length
-        ? prisma.user.findMany({ where: { id: { in: topUserIds } }, select: { id: true, nickname: true } })
-        : Promise.resolve([]),
-      topUserIds.length
-        ? prisma.order.groupBy({
-          by: ["taker_id"],
-          where: { status: OrderStatus.COMPLETED, taker_id: { in: topUserIds } },
-          _count: { _all: true },
-        })
-        : Promise.resolve([]),
-    ]);
-
-    const userIdToNickname = new Map<number, string>();
-    for (const u of topUsers) {
-      userIdToNickname.set(u.id, u.nickname ?? "");
+    const activeUserIds = new Set<number>();
+    for (const order of recentErrandOrders) {
+      activeUserIds.add(order.task.publisher_id);
+      if (order.taker_id) activeUserIds.add(order.taker_id);
     }
+    for (const order of recentFoodOrders) {
+      activeUserIds.add(order.user_id);
+      if (order.runner_id) activeUserIds.add(order.runner_id);
+    }
+    for (const post of recentForumPosts) activeUserIds.add(post.author_id);
 
+    const dayKey = (date: Date) => {
+      const year = date.getFullYear();
+      const month = String(date.getMonth() + 1).padStart(2, "0");
+      const dayOfMonth = String(date.getDate()).padStart(2, "0");
+      return `${year}-${month}-${dayOfMonth}`;
+    };
+    const trendCount = new Map<string, number>();
+    for (const row of [...trendErrandOrders, ...trendFoodOrders]) {
+      const key = dayKey(row.created_at);
+      trendCount.set(key, (trendCount.get(key) ?? 0) + 1);
+    }
+    const trend7d = Array.from({ length: 7 }, (_, index) => {
+      const date = new Date(activeStart);
+      date.setDate(date.getDate() + index);
+      const dateKey = dayKey(date);
+      return { date: dateKey, orders: trendCount.get(dateKey) ?? 0 };
+    });
+
+    const [topEarningRows, errandCompletedRows, foodCompletedRows, forumPostCount] = await Promise.all([
+      prisma.earning.groupBy({
+        by: ["user_id"],
+        where: { type: { in: ["ORDER", "FOOD_DELIVERY"] }, status: "SETTLED" },
+        _sum: { amount: true },
+        orderBy: { _sum: { amount: "desc" } },
+        take: 10,
+      }),
+      prisma.order.groupBy({ by: ["taker_id"], where: { status: OrderStatus.COMPLETED, taker_id: { not: null } }, _count: { _all: true } }),
+      prisma.foodOrder.groupBy({ by: ["runner_id"], where: { status: "COMPLETED", runner_id: { not: null } }, _count: { _all: true } }),
+      prisma.forumPost.count({ where: { status: "APPROVED" } }),
+    ]);
+    const topUserIds = topEarningRows.map((row) => row.user_id);
+    const topUsers = topUserIds.length
+      ? await prisma.user.findMany({ where: { id: { in: topUserIds } }, select: { id: true, nickname: true } })
+      : [];
+    const userIdToNickname = new Map(topUsers.map((user) => [user.id, user.nickname ?? ""]));
     const userIdToCompleted = new Map<number, number>();
-    for (const row of completedRows) {
-      const userId = row.taker_id;
-      if (!userId) continue;
-      userIdToCompleted.set(userId, row._count._all ?? 0);
-    }
-
-    const runnerRanking = topEarningRows.map((r, i) => ({
-      rank: i + 1,
-      user_id: r.user_id,
-      nickname: userIdToNickname.get(r.user_id) ?? "",
-      totalEarning: r._sum.amount ?? new Prisma.Decimal(0),
-      completedOrders: userIdToCompleted.get(r.user_id) ?? 0,
+    for (const row of errandCompletedRows) if (row.taker_id) userIdToCompleted.set(row.taker_id, row._count._all);
+    for (const row of foodCompletedRows) if (row.runner_id) userIdToCompleted.set(row.runner_id, (userIdToCompleted.get(row.runner_id) ?? 0) + row._count._all);
+    const runnerRanking = topEarningRows.map((row, index) => ({
+      rank: index + 1,
+      user_id: row.user_id,
+      nickname: userIdToNickname.get(row.user_id) ?? "",
+      totalEarning: row._sum.amount ?? zero,
+      completedOrders: userIdToCompleted.get(row.user_id) ?? 0,
     }));
 
+    const heatCount = new Map<string, number>();
+    const addHeatAddress = (address: string | null | undefined) => {
+      const normalized = String(address ?? "").trim();
+      if (!normalized) return;
+      const label = normalized.slice(0, 20);
+      heatCount.set(label, (heatCount.get(label) ?? 0) + 1);
+    };
+    recentTasks.forEach((task) => addHeatAddress(task.pickup_address));
+    recentFoodDeliveryOrders.forEach((order) => addHeatAddress(order.delivery_address));
+    const areaOrderDensity = Array.from(heatCount.entries())
+      .sort(([, left], [, right]) => right - left)
+      .slice(0, 12)
+      .map(([name, value], index) => ({ name, value, x: index % 4, y: Math.floor(index / 4) }));
+
     return {
+      // Legacy contracts
       orderStats: { todayOrders, weekOrders, monthOrders, totalOrders },
       amountStats: { todayAmount, weekAmount, monthAmount, totalAmount },
-      userStats: { totalUsers, todayNewUsers, activeUsers },
+      userStats: { totalUsers, todayNewUsers, activeUsers: activeUserIds.size, runnerCount },
       runnerRanking,
+      // Campus life platform insights
+      todayOrders,
+      weekOrders,
+      monthOrders,
+      todayAmount,
+      activeUsers: activeUserIds.size,
+      runnerCount,
+      trend7d,
+      runnerRank: runnerRanking,
+      orderTypeDistribution: [
+        { name: "跑腿", value: totalErrandOrders },
+        { name: "外卖", value: totalFoodOrders },
+        { name: "信息广场", value: forumPostCount },
+      ],
+      areaOrderDensity,
     };
   }
 
@@ -1757,6 +1808,7 @@ export class AdminService {
       { key: "timeout_pending_task_minutes", value: "120" },
       { key: "timeout_accepted_no_pickup_minutes", value: "20" },
       { key: "timeout_picked_no_complete_minutes", value: "40" },
+      { key: "invite_reward_coupon_id", value: "disabled" },
     ];
 
     const defaultKeys = defaults.map((d) => d.key);

@@ -1,4 +1,4 @@
-import { type OrderStatus, PrismaClient } from "@prisma/client";
+import { type FoodOrderStatus, type OrderStatus, PrismaClient } from "@prisma/client";
 import { websocketService } from "./websocket.service";
 
 const prisma = new PrismaClient();
@@ -16,6 +16,12 @@ type NotifyOrderUrgedInput = {
   at?: string;
 };
 
+type NotifyFoodOrderStatusChangedInput = {
+  orderId: number;
+  fromStatus?: FoodOrderStatus;
+  toStatus: FoodOrderStatus;
+};
+
 type NotifyComplaintProcessedInput = {
   runnerId: number;
   complaintId: number;
@@ -25,6 +31,38 @@ type NotifyComplaintProcessedInput = {
 };
 
 export class NotificationService {
+  async notifyFoodOrderStatusChanged(input: NotifyFoodOrderStatusChangedInput) {
+    if (!Number.isFinite(input.orderId) || input.orderId <= 0) return;
+    if (input.fromStatus && input.fromStatus === input.toStatus) return;
+
+    const order = await prisma.foodOrder.findUnique({
+      where: { id: input.orderId },
+      select: { id: true, status: true, user_id: true, runner_id: true, merchant: { select: { owner_id: true, name: true } } },
+    });
+    if (!order) return;
+
+    const recipientIds = Array.from(new Set([order.user_id, order.runner_id, order.merchant.owner_id].filter((id): id is number => typeof id === "number")));
+    const payload = {
+      business: "FOOD",
+      orderId: order.id,
+      merchantName: order.merchant.name,
+      fromStatus: input.fromStatus,
+      toStatus: input.toStatus,
+      userId: order.user_id,
+      runnerId: order.runner_id,
+      at: new Date().toISOString(),
+    };
+
+    try {
+      const io = websocketService.getIO();
+      for (const userId of recipientIds) io.to(`user:${userId}`).emit("food:order:status", payload);
+      for (const userId of recipientIds) websocketService.sendToUser(userId, { type: "FOOD_ORDER_STATUS", data: payload });
+    } catch (error) {
+      // Real-time channel must not roll back a completed business transaction.
+      console.error("[NotificationService] 外卖订单状态推送失败:", error);
+    }
+  }
+
   async notifyOrderStatusChanged(input: NotifyOrderStatusChangedInput) {
     if (!Number.isFinite(input.orderId) || input.orderId <= 0) return;
     if (input.fromStatus && input.fromStatus === input.toStatus) return;
