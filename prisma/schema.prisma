@@ -109,11 +109,17 @@ enum MerchantStatus {
 enum FoodOrderStatus {
   PENDING_PAYMENT
   PAID
+  MERCHANT_ACCEPTED
+  PREPARING
+  READY_FOR_PICKUP
   ACCEPTED
   PICKED
   DELIVERING
+  DELIVERED
   COMPLETED
   CANCELLED
+  REFUNDING
+  REFUNDED
 }
 
 enum MemberLevel {
@@ -179,6 +185,7 @@ model User {
   merchants_owned        Merchant[]            @relation("MerchantOwner")
   food_orders            FoodOrder[]           @relation("FoodOrderUser")
   food_orders_taken      FoodOrder[]           @relation("FoodOrderRunner")
+  food_order_events      FoodOrderTimeline[]   @relation("FoodOrderEventActor")
   inviter                User?                 @relation("UserInvitations", fields: [invited_by], references: [id], onDelete: SetNull)
   invitees               User[]                @relation("UserInvitations")
 
@@ -231,6 +238,7 @@ model WalletLog {
   type           String
   amount         Decimal  @db.Decimal(12, 2)
   ref_order_id   Int?
+  food_order_id  Int?
   before_balance Decimal  @db.Decimal(12, 2)
   after_balance  Decimal  @db.Decimal(12, 2)
   created_at     DateTime @default(now())
@@ -238,9 +246,11 @@ model WalletLog {
 
   wallet    UserWallet @relation(fields: [wallet_id], references: [id], onDelete: Cascade)
   ref_order Order?     @relation("WalletLogOrder", fields: [ref_order_id], references: [id], onDelete: SetNull)
+  food_order FoodOrder? @relation("FoodWalletLog", fields: [food_order_id], references: [id], onDelete: SetNull)
 
   @@index([wallet_id])
   @@index([ref_order_id])
+  @@index([food_order_id])
   @@map("wallet_logs")
 }
 
@@ -369,6 +379,7 @@ model Earning {
   id         Int       @id @default(autoincrement())
   user_id    Int
   order_id   Int?
+  food_order_id Int?
   amount     Decimal   @db.Decimal(12, 2)
   type       String
   status     String
@@ -378,9 +389,11 @@ model Earning {
 
   user  User   @relation(fields: [user_id], references: [id], onDelete: Cascade)
   order Order? @relation(fields: [order_id], references: [id], onDelete: SetNull)
+  food_order FoodOrder? @relation("FoodOrderEarning", fields: [food_order_id], references: [id], onDelete: SetNull)
 
   @@index([user_id])
   @@index([order_id])
+  @@index([food_order_id])
   @@map("earnings")
 }
 
@@ -570,6 +583,10 @@ model Merchant {
   logo            String?        @db.VarChar(500)
   address         String         @db.VarChar(160)
   phone           String?        @db.VarChar(30)
+  cover_image     String?        @db.VarChar(500)
+  announcement    String?        @db.VarChar(500)
+  min_order_amount Decimal       @default(0) @db.Decimal(12, 2)
+  prepare_minutes Int            @default(15)
   status          MerchantStatus @default(PENDING)
   audit_note      String?        @db.VarChar(300)
   commission_rate Decimal        @default(0.1000) @db.Decimal(5, 4)
@@ -579,6 +596,7 @@ model Merchant {
 
   owner      User           @relation("MerchantOwner", fields: [owner_id], references: [id], onDelete: Cascade)
   menu_items MenuItem[]
+  categories FoodCategory[]
   food_orders FoodOrder[]
 
   @@index([owner_id, status])
@@ -589,10 +607,12 @@ model Merchant {
 model MenuItem {
   id          Int      @id @default(autoincrement())
   merchant_id Int
+  category_id Int?
   name        String   @db.VarChar(100)
   description String?  @db.VarChar(500)
   image       String?  @db.VarChar(500)
   price       Decimal  @db.Decimal(12, 2)
+  original_price Decimal? @db.Decimal(12, 2)
   stock       Int      @default(-1)
   is_active   Boolean  @default(true)
   sort_order  Int      @default(0)
@@ -600,14 +620,34 @@ model MenuItem {
   updated_at  DateTime @default(now()) @updatedAt
 
   merchant         Merchant        @relation(fields: [merchant_id], references: [id], onDelete: Cascade)
+  category         FoodCategory?   @relation(fields: [category_id], references: [id], onDelete: SetNull)
   food_order_items FoodOrderItem[]
 
   @@index([merchant_id, is_active, sort_order])
+  @@index([category_id])
   @@map("menu_items")
+}
+
+model FoodCategory {
+  id          Int      @id @default(autoincrement())
+  merchant_id Int
+  name        String   @db.VarChar(60)
+  sort_order  Int      @default(0)
+  is_active   Boolean  @default(true)
+  created_at  DateTime @default(now())
+  updated_at  DateTime @default(now()) @updatedAt
+
+  merchant   Merchant   @relation(fields: [merchant_id], references: [id], onDelete: Cascade)
+  menu_items MenuItem[]
+
+  @@unique([merchant_id, name])
+  @@index([merchant_id, is_active, sort_order])
+  @@map("food_categories")
 }
 
 model FoodOrder {
   id              Int             @id @default(autoincrement())
+  order_no        String?         @unique @db.VarChar(40)
   user_id         Int
   merchant_id     Int
   runner_id       Int?
@@ -619,13 +659,21 @@ model FoodOrder {
   remark          String?         @db.VarChar(500)
   item_amount     Decimal         @db.Decimal(12, 2)
   delivery_fee    Decimal         @default(0) @db.Decimal(12, 2)
+  discount_amount Decimal         @default(0) @db.Decimal(12, 2)
   commission_rate Decimal         @db.Decimal(5, 4)
   commission_amount Decimal       @default(0) @db.Decimal(12, 2)
   total_amount    Decimal         @db.Decimal(12, 2)
+  payable_amount  Decimal         @default(0) @db.Decimal(12, 2)
+  merchant_income Decimal         @default(0) @db.Decimal(12, 2)
+  runner_income   Decimal         @default(0) @db.Decimal(12, 2)
+  platform_income Decimal         @default(0) @db.Decimal(12, 2)
+  pickup_code     String?         @db.VarChar(12)
+  payment_expire_at DateTime?
   payment_at      DateTime?
   accept_time     DateTime?
   pickup_time     DateTime?
   delivery_start_time DateTime?
+  delivered_at       DateTime?
   complete_time   DateTime?
   cancelled_at    DateTime?
   cancel_reason   String?         @db.VarChar(300)
@@ -636,11 +684,15 @@ model FoodOrder {
   merchant Merchant  @relation(fields: [merchant_id], references: [id], onDelete: Restrict)
   runner   User?     @relation("FoodOrderRunner", fields: [runner_id], references: [id], onDelete: SetNull)
   items    FoodOrderItem[]
+  timelines FoodOrderTimeline[]
+  wallet_logs WalletLog[] @relation("FoodWalletLog")
+  earnings Earning[] @relation("FoodOrderEarning")
 
   @@index([user_id, created_at])
   @@index([merchant_id, status, created_at])
   @@index([runner_id, status, created_at])
   @@index([status, created_at])
+  @@index([order_no])
   @@map("food_orders")
 }
 
@@ -659,6 +711,24 @@ model FoodOrderItem {
   @@index([food_order_id])
   @@index([menu_item_id])
   @@map("food_order_items")
+}
+
+model FoodOrderTimeline {
+  id            Int      @id @default(autoincrement())
+  food_order_id Int
+  from_status   FoodOrderStatus?
+  to_status     FoodOrderStatus
+  actor_id      Int?
+  actor_role    String?  @db.VarChar(24)
+  note          String?  @db.VarChar(300)
+  created_at    DateTime @default(now())
+
+  food_order FoodOrder @relation(fields: [food_order_id], references: [id], onDelete: Cascade)
+  actor      User?      @relation("FoodOrderEventActor", fields: [actor_id], references: [id], onDelete: SetNull)
+
+  @@index([food_order_id, created_at])
+  @@index([actor_id])
+  @@map("food_order_timelines")
 }
 
 model AdminLog {
