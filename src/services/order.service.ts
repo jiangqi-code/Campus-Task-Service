@@ -1188,6 +1188,7 @@ export const listOrders = async (input: ListOrdersInput) => {
 
     const mapped = (items as Array<any>).map((order) => ({
       id: order.id,
+      order_id: order.id,
       task_id: order.task.id,
       status: order.status,
       created_at: order.created_at,
