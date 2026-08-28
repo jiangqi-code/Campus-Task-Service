@@ -257,6 +257,7 @@ model WalletLog {
 model Task {
   id               Int        @id @default(autoincrement())
   publisher_id     Int
+  food_order_id    Int?       @unique
   pickup_address   String
   pickup_lat       Decimal?   @db.Decimal(10, 6)
   pickup_lng       Decimal?   @db.Decimal(10, 6)
@@ -285,6 +286,7 @@ model Task {
   updated_at       DateTime   @default(now()) @updatedAt
 
   publisher   User        @relation("TaskPublisher", fields: [publisher_id], references: [id], onDelete: Restrict)
+  food_order  FoodOrder?  @relation("FoodOrderDeliveryTask", fields: [food_order_id], references: [id], onDelete: Cascade)
   orders      Order[]
   user_coupon UserCoupon? @relation(fields: [user_coupon_id], references: [id], onDelete: SetNull)
 
@@ -687,6 +689,7 @@ model FoodOrder {
   user     User      @relation("FoodOrderUser", fields: [user_id], references: [id], onDelete: Cascade)
   merchant Merchant  @relation(fields: [merchant_id], references: [id], onDelete: Restrict)
   runner   User?     @relation("FoodOrderRunner", fields: [runner_id], references: [id], onDelete: SetNull)
+  delivery_task Task? @relation("FoodOrderDeliveryTask")
   items    FoodOrderItem[]
   timelines FoodOrderTimeline[]
   wallet_logs WalletLog[] @relation("FoodWalletLog")

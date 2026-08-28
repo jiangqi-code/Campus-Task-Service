@@ -130,7 +130,7 @@ export class TimeoutService {
 
     const cutoff = minutesAgo(timeoutMinutes);
     const candidates = await prisma.task.findMany({
-      where: { status: TaskStatus.PENDING, created_at: { lte: cutoff } },
+      where: { status: TaskStatus.PENDING, food_order_id: null, created_at: { lte: cutoff } },
       select: { id: true, created_at: true, publisher_id: true, status: true },
       take: 200,
       orderBy: { created_at: "asc" },
@@ -300,6 +300,7 @@ export class TimeoutService {
     const candidates = await prisma.order.findMany({
       where: {
         status: OrderStatus.ACCEPTED,
+        task: { food_order_id: null },
         OR: [{ accept_time: { lte: cutoff } }, { accept_time: null, created_at: { lte: cutoff } }],
       },
       select: { id: true },

@@ -1,4 +1,4 @@
-import { FoodOrderStatus, MerchantStatus, Prisma, PrismaClient } from "@prisma/client";
+import { FoodOrderStatus, MerchantStatus, Prisma, PrismaClient, TaskStatus } from "@prisma/client";
 import { sensitiveWordService } from "./sensitiveWord.service";
 import { notificationService } from "./notification.service";
 import { CouponError, consumeUserCoupon, quoteUserCoupon } from "./coupon.service";
@@ -64,6 +64,15 @@ const parsePage = (page: unknown, pageSize: unknown, max = 50) => {
 };
 
 const toNumber = (value: Prisma.Decimal | number | null | undefined) => Number(value ?? 0);
+
+const foodDeliveryTaskRemark = (order: {
+  merchant: { name: string };
+  items: Array<{ item_name: string; quantity: number }>;
+  remark: string | null;
+}) => {
+  const items = order.items.map((item) => `${item.item_name}×${item.quantity}`).join("、");
+  return ["食堂外卖", order.merchant.name, items, order.remark ? `备注：${order.remark}` : ""].filter(Boolean).join(" · ");
+};
 
 type BusinessHour = { day: number; enabled: boolean; start: string; end: string };
 type FoodOptionChoice = { name: string; price_delta: number };
@@ -739,10 +748,44 @@ export class FoodService {
       READY: { from: [FoodOrderStatus.MERCHANT_ACCEPTED, FoodOrderStatus.PREPARING], to: FoodOrderStatus.READY_FOR_PICKUP, note: "餐品已备好，等待跑腿员取餐" },
     }[action];
     if (!transition) throw new FoodError(400, "action 必须为 accept、prepare 或 ready");
-    const current = await prisma.foodOrder.findFirst({ where: { id: input.orderId, merchant_id: input.merchantId, status: { in: transition.from } } });
+    let fromStatus: FoodOrderStatus | null = null;
+    const order = await prisma.$transaction(async (tx) => {
+    const current = await tx.foodOrder.findFirst({ where: { id: input.orderId, merchant_id: input.merchantId, status: { in: transition.from } }, include: { merchant: { select: { name: true, address: true } }, items: { select: { item_name: true, quantity: true } } } });
     if (!current) throw new FoodError(409, "订单状态已变化，无法处理");
-    const order = await prisma.foodOrder.update({ where: { id: current.id }, data: { status: transition.to, timelines: { create: { from_status: current.status, to_status: transition.to, actor_id: input.ownerId, actor_role: "MERCHANT", note: note || transition.note } } }, include: orderInclude });
-    void notificationService.notifyFoodOrderStatusChanged({ orderId: order.id, fromStatus: current.status, toStatus: transition.to });
+    fromStatus = current.status;
+    const updated = await tx.foodOrder.update({ where: { id: current.id }, data: { status: transition.to, timelines: { create: { from_status: current.status, to_status: transition.to, actor_id: input.ownerId, actor_role: "MERCHANT", note: note || transition.note } } }, include: orderInclude });
+    if (transition.to === FoodOrderStatus.READY_FOR_PICKUP) {
+      await tx.task.upsert({
+        where: { food_order_id: current.id },
+        update: {
+          pickup_address: current.merchant.address,
+          delivery_address: current.delivery_address,
+          delivery_lat: current.delivery_lat,
+          delivery_lng: current.delivery_lng,
+          remark: foodDeliveryTaskRemark(current),
+          fee_total: current.runner_income,
+          original_amount: current.runner_income,
+        },
+        create: {
+          food_order_id: current.id,
+          publisher_id: current.user_id,
+          pickup_address: current.merchant.address,
+          delivery_address: current.delivery_address,
+          delivery_lat: current.delivery_lat,
+          delivery_lng: current.delivery_lng,
+          type: "FOOD_DELIVERY",
+          remark: foodDeliveryTaskRemark(current),
+          fee_total: current.runner_income,
+          original_amount: current.runner_income,
+          discount_amount: new Prisma.Decimal(0),
+          tip: new Prisma.Decimal(0),
+          status: TaskStatus.PENDING,
+        },
+      });
+    }
+    return updated;
+    });
+    void notificationService.notifyFoodOrderStatusChanged({ orderId: order.id, fromStatus: fromStatus ?? undefined, toStatus: transition.to });
     return mapFoodOrder(order);
   }
 
@@ -777,6 +820,8 @@ export class FoodService {
   }
 
   async acceptOrder(input: { orderId: number; runnerId: number }) {
+    const deliveryTask = await prisma.task.findUnique({ where: { food_order_id: input.orderId }, select: { id: true } });
+    if (deliveryTask) throw new FoodError(409, "该订单已同步到任务大厅，请通过标准任务接单");
     const order = await prisma.$transaction(async (tx) => {
       const updated = await tx.foodOrder.updateMany({
         where: { id: input.orderId, status: FoodOrderStatus.READY_FOR_PICKUP, runner_id: null },
@@ -791,6 +836,8 @@ export class FoodService {
   }
 
   async updateDeliveryStatus(input: { orderId: number; runnerId: number; action: unknown }) {
+    const deliveryTask = await prisma.task.findUnique({ where: { food_order_id: input.orderId }, select: { id: true } });
+    if (deliveryTask) throw new FoodError(409, "该订单已同步到任务大厅，请通过标准任务更新配送状态");
     const action = stringValue(input.action).toUpperCase();
     const transitions: Record<string, { from: FoodOrderStatus; to: FoodOrderStatus; time: "pickup_time" | "delivery_start_time" | "delivered_at" }> = {
       PICKUP: { from: FoodOrderStatus.ACCEPTED, to: FoodOrderStatus.PICKED, time: "pickup_time" },
@@ -816,6 +863,7 @@ export class FoodService {
       if (order.user_id !== input.userId) throw new FoodError(403, "无权确认该订单");
       if (order.status !== FoodOrderStatus.DELIVERED || !order.runner_id) throw new FoodError(409, "当前订单暂不能确认收餐");
       const now = new Date();
+      await tx.task.updateMany({ where: { food_order_id: order.id }, data: { status: TaskStatus.COMPLETED } });
       const merchantWallet = await tx.userWallet.upsert({ where: { user_id: order.merchant.owner_id }, update: {}, create: { user_id: order.merchant.owner_id } });
       const runnerWallet = await tx.userWallet.upsert({ where: { user_id: order.runner_id }, update: {}, create: { user_id: order.runner_id } });
       const merchantAfter = merchantWallet.balance.plus(order.merchant_income);

@@ -395,7 +395,22 @@ export class TaskService {
         : { created_at: "desc" };
     const [total, items] = await Promise.all([
       prisma.task.count({ where }),
-      prisma.task.findMany({ where, orderBy, skip, take: pageSize }),
+      prisma.task.findMany({
+        where,
+        orderBy,
+        skip,
+        take: pageSize,
+        include: {
+          food_order: {
+            select: {
+              id: true,
+              order_no: true,
+              merchant: { select: { name: true } },
+              items: { select: { item_name: true, quantity: true } },
+            },
+          },
+        },
+      }),
     ]);
 
     return {
@@ -445,6 +460,7 @@ export class TaskService {
           id: true,
           status: true,
           publisher_id: true,
+          food_order_id: true,
           fee_total: true,
           tip: true,
         },
@@ -455,6 +471,9 @@ export class TaskService {
       }
       if (task.publisher_id !== input.publisherId) {
         throw new TaskError(403, "无权限");
+      }
+      if (task.food_order_id) {
+        throw new TaskError(409, "食堂外卖请在外卖订单中取消");
       }
       if (task.status !== TaskStatus.PENDING) {
         throw new TaskError(409, "任务状态必须为 PENDING 才能取消");

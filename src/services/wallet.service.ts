@@ -42,7 +42,7 @@ export const settleOrderOnConfirm = async (orderId: number, confirmerUserId: num
         status: true,
         taker_id: true,
         final_price: true,
-        task: { select: { publisher_id: true, fee_total: true, tip: true } },
+        task: { select: { publisher_id: true, fee_total: true, tip: true, food_order_id: true } },
       },
     });
 
@@ -54,6 +54,10 @@ export const settleOrderOnConfirm = async (orderId: number, confirmerUserId: num
     }
     if (order.status !== OrderStatus.COMPLETED) {
       throw new WalletError(409, "订单状态必须为 COMPLETED");
+    }
+
+    if (order.task.food_order_id) {
+      throw new WalletError(409, "食堂外卖请在外卖订单中确认收餐");
     }
 
     const takerId = order.taker_id;

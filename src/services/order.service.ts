@@ -1,5 +1,5 @@
 // @ts-ignore  // 临时忽略类型检查，解决声明文件缺失问题
-import { OrderStatus, Prisma, PrismaClient, TaskStatus } from "@prisma/client";
+import { FoodOrderStatus, OrderStatus, Prisma, PrismaClient, TaskStatus } from "@prisma/client";
 import { type RedisClientType, createClient } from "redis";
 import { notificationService } from "./notification.service";
 import { creditService, isOnTimeDelivery } from "./credit.service";
@@ -183,6 +183,7 @@ const transitionOrderStatus = async (orderId: number, userId: number, nextStatus
         task: {
           select: {
             id: true,
+            food_order_id: true,
             created_at: true,
             urgency: true,
             pickup_lat: true,
@@ -216,6 +217,39 @@ const transitionOrderStatus = async (orderId: number, userId: number, nextStatus
       where: { id: orderId },
       data: toTransitionUpdate(nextStatus),
     });
+
+    const foodTransition = {
+      [OrderStatus.PICKED]: { from: FoodOrderStatus.ACCEPTED, to: FoodOrderStatus.PICKED, timeField: "pickup_time" as const },
+      [OrderStatus.DELIVERING]: { from: FoodOrderStatus.PICKED, to: FoodOrderStatus.DELIVERING, timeField: "delivery_start_time" as const },
+      [OrderStatus.COMPLETED]: { from: FoodOrderStatus.DELIVERING, to: FoodOrderStatus.DELIVERED, timeField: "delivered_at" as const },
+    }[nextStatus];
+
+    const foodOrderId = (order.task as { food_order_id?: number | null }).food_order_id ?? null;
+    if (foodOrderId && foodTransition) {
+      const transitionTime =
+        foodTransition.timeField === "pickup_time"
+          ? updated.pickup_time ?? new Date()
+          : foodTransition.timeField === "delivery_start_time"
+            ? updated.delivery_start_time ?? new Date()
+            : updated.complete_time ?? new Date();
+      const changed = await tx.foodOrder.updateMany({
+        where: { id: foodOrderId, runner_id: userId, status: foodTransition.from },
+        data: { status: foodTransition.to, [foodTransition.timeField]: transitionTime },
+      });
+      if (changed.count !== 1) {
+        throw new OrderError(409, "外卖订单状态已变化，无法更新配送进度");
+      }
+      await tx.foodOrderTimeline.create({
+        data: {
+          food_order_id: foodOrderId,
+          from_status: foodTransition.from,
+          to_status: foodTransition.to,
+          actor_id: userId,
+          actor_role: "RUNNER",
+          note: foodTransition.to === FoodOrderStatus.DELIVERED ? "跑腿员已送达，等待用户确认收餐" : undefined,
+        },
+      });
+    }
 
     if (nextStatus === OrderStatus.COMPLETED) {
       const completeTime = updated.complete_time ?? new Date();
@@ -294,12 +328,23 @@ const transitionOrderStatus = async (orderId: number, userId: number, nextStatus
       });
     }
 
-    return { order, updated };
+    return {
+      order,
+      updated,
+      foodOrderId,
+      foodFromStatus: foodTransition?.from ?? undefined,
+      foodToStatus: foodTransition?.to ?? undefined,
+    };
   });
 
   notificationService
     .notifyOrderStatusChanged({ orderId: result.updated.id, fromStatus: result.order.status, toStatus: nextStatus })
     .catch(() => { });
+  if (result.foodOrderId) {
+    notificationService
+      .notifyFoodOrderStatusChanged({ orderId: result.foodOrderId, fromStatus: result.foodFromStatus, toStatus: result.foodToStatus })
+      .catch(() => { });
+  }
 
   return result.updated;
 };
@@ -341,6 +386,7 @@ const transitionOrderStatusWithTrack = async (
         task: {
           select: {
             id: true,
+            food_order_id: true,
             created_at: true,
             urgency: true,
             pickup_lat: true,
@@ -383,6 +429,36 @@ const transitionOrderStatusWithTrack = async (
       });
     }
 
+    const foodTransition = {
+      [OrderStatus.PICKED]: { from: FoodOrderStatus.ACCEPTED, to: FoodOrderStatus.PICKED, timeField: "pickup_time" as const },
+      [OrderStatus.DELIVERING]: { from: FoodOrderStatus.PICKED, to: FoodOrderStatus.DELIVERING, timeField: "delivery_start_time" as const },
+      [OrderStatus.COMPLETED]: { from: FoodOrderStatus.DELIVERING, to: FoodOrderStatus.DELIVERED, timeField: "delivered_at" as const },
+    }[nextStatus];
+    const foodOrderId = (order.task as { food_order_id?: number | null }).food_order_id ?? null;
+    if (foodOrderId && foodTransition) {
+      const transitionTime =
+        foodTransition.timeField === "pickup_time"
+          ? updated.pickup_time ?? new Date()
+          : foodTransition.timeField === "delivery_start_time"
+            ? updated.delivery_start_time ?? new Date()
+            : updated.complete_time ?? new Date();
+      const changed = await tx.foodOrder.updateMany({
+        where: { id: foodOrderId, runner_id: userId, status: foodTransition.from },
+        data: { status: foodTransition.to, [foodTransition.timeField]: transitionTime },
+      });
+      if (changed.count !== 1) throw new OrderError(409, "外卖订单状态已变化，无法更新配送进度");
+      await tx.foodOrderTimeline.create({
+        data: {
+          food_order_id: foodOrderId,
+          from_status: foodTransition.from,
+          to_status: foodTransition.to,
+          actor_id: userId,
+          actor_role: "RUNNER",
+          note: foodTransition.to === FoodOrderStatus.DELIVERED ? "跑腿员已送达，等待用户确认收餐" : undefined,
+        },
+      });
+    }
+
     if (nextStatus === OrderStatus.COMPLETED) {
       const completeTime = updated.complete_time ?? new Date();
       const onTime = isOnTimeDelivery({
@@ -460,12 +536,23 @@ const transitionOrderStatusWithTrack = async (
       });
     }
 
-    return { order, updated };
+    return {
+      order,
+      updated,
+      foodOrderId,
+      foodFromStatus: foodTransition?.from ?? undefined,
+      foodToStatus: foodTransition?.to ?? undefined,
+    };
   });
 
   notificationService
     .notifyOrderStatusChanged({ orderId: result.updated.id, fromStatus: result.order.status, toStatus: nextStatus })
     .catch(() => { });
+  if (result.foodOrderId) {
+    notificationService
+      .notifyFoodOrderStatusChanged({ orderId: result.foodOrderId, fromStatus: result.foodFromStatus, toStatus: result.foodToStatus })
+      .catch(() => { });
+  }
 
   return result.updated;
 };
@@ -534,8 +621,23 @@ export const acceptTask = async (taskId: number, userId: number) => {
 
     const acceptTime = new Date();
     const order = await prisma.$transaction(async (tx) => {
-      const finalPrice = task.fee_total.plus(task.tip ?? new Prisma.Decimal(0));
+      let foodOrder: { id: number; runner_income: Prisma.Decimal } | null = null;
+      if (task.food_order_id) {
+        foodOrder = await tx.foodOrder.findFirst({
+          where: { id: task.food_order_id, status: FoodOrderStatus.READY_FOR_PICKUP, runner_id: null },
+          select: { id: true, runner_income: true },
+        });
+        if (!foodOrder) throw new OrderError(409, "该外卖配送任务已被接单或已取消");
+        const claimed = await tx.foodOrder.updateMany({
+          where: { id: foodOrder.id, status: FoodOrderStatus.READY_FOR_PICKUP, runner_id: null },
+          data: { status: FoodOrderStatus.ACCEPTED, runner_id: userId, accept_time: acceptTime },
+        });
+        if (claimed.count !== 1) throw new OrderError(409, "该外卖配送任务已被其他跑腿员接走");
+      }
 
+      const finalPrice = foodOrder?.runner_income ?? task.fee_total.plus(task.tip ?? new Prisma.Decimal(0));
+
+      if (!foodOrder) {
       const publisherWallet = await tx.userWallet.upsert({
         where: { user_id: task.publisher_id },
         create: { user_id: task.publisher_id },
@@ -548,6 +650,8 @@ export const acceptTask = async (taskId: number, userId: number) => {
       });
       if (freeze.count !== 1) {
         throw new OrderError(409, "发布者余额不足");
+      }
+
       }
 
       const created = await tx.order.create({
@@ -566,7 +670,20 @@ export const acceptTask = async (taskId: number, userId: number) => {
         data: { status: TaskStatus.ACCEPTED },
       });
 
-      if (task.user_coupon_id) {
+      if (foodOrder) {
+        await tx.foodOrderTimeline.create({
+          data: {
+            food_order_id: foodOrder.id,
+            from_status: FoodOrderStatus.READY_FOR_PICKUP,
+            to_status: FoodOrderStatus.ACCEPTED,
+            actor_id: userId,
+            actor_role: "RUNNER",
+            note: "跑腿员已从任务大厅接单",
+          },
+        });
+      }
+
+      if (!foodOrder && task.user_coupon_id) {
         await tx.userCoupon.update({ where: { id: task.user_coupon_id }, data: { order_id: created.id } });
       }
 
@@ -576,6 +693,11 @@ export const acceptTask = async (taskId: number, userId: number) => {
     notificationService
       .notifyOrderStatusChanged({ orderId: order.id, toStatus: OrderStatus.ACCEPTED })
       .catch(() => { });
+    if (task.food_order_id) {
+      notificationService
+        .notifyFoodOrderStatusChanged({ orderId: task.food_order_id, fromStatus: FoodOrderStatus.READY_FOR_PICKUP, toStatus: FoodOrderStatus.ACCEPTED })
+        .catch(() => { });
+    }
 
     return order;
   } finally {
