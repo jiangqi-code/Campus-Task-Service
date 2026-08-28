@@ -189,7 +189,7 @@ const merchantAvailability = (merchant: any) => {
   return { businessHours, isOrderable };
 };
 
-const mapMerchant = (merchant: any) => {
+const mapMerchant = (merchant: any, includeQualifications = false) => {
   const availability = merchantAvailability(merchant);
   return {
   id: merchant.id,
@@ -200,6 +200,7 @@ const mapMerchant = (merchant: any) => {
   address: merchant.address,
   phone: merchant.phone,
   cover_image: merchant.cover_image,
+  ...(includeQualifications ? { business_license_image: merchant.business_license_image } : {}),
   announcement: merchant.announcement,
   min_order_amount: toNumber(merchant.min_order_amount),
   prepare_minutes: merchant.prepare_minutes,
@@ -374,7 +375,7 @@ export class FoodService {
       orderBy: { created_at: "desc" },
       include: { _count: { select: { menu_items: { where: { is_active: true } } } } },
     });
-    const orderableMerchants = merchants.map(mapMerchant).filter((merchant) => merchant.is_orderable);
+    const orderableMerchants = merchants.map((merchant) => mapMerchant(merchant)).filter((merchant) => merchant.is_orderable);
     return { page, page_size: pageSize, total: orderableMerchants.length, list: orderableMerchants.slice(skip, skip + pageSize) };
   }
 
@@ -390,16 +391,17 @@ export class FoodService {
     if (!merchant) throw new FoodError(404, "商家不存在");
     const canView = merchant.status === MerchantStatus.APPROVED || merchant.owner_id === input.viewerId || input.isAdmin;
     if (!canView) throw new FoodError(404, "商家暂不可见");
-    return { merchant: mapMerchant(merchant), categories: merchant.categories.map(mapFoodCategory), menu_items: merchant.menu_items.map(mapMenuItem) };
+    return { merchant: mapMerchant(merchant, merchant.owner_id === input.viewerId || Boolean(input.isAdmin)), categories: merchant.categories.map(mapFoodCategory), menu_items: merchant.menu_items.map(mapMenuItem) };
   }
 
-  async applyMerchant(input: { ownerId: number; name: unknown; description?: unknown; logo?: unknown; coverImage?: unknown; announcement?: unknown; minOrderAmount?: unknown; prepareMinutes?: unknown; businessHours?: unknown; address: unknown; phone?: unknown }) {
+  async applyMerchant(input: { ownerId: number; name: unknown; description?: unknown; logo?: unknown; coverImage?: unknown; businessLicenseImage?: unknown; announcement?: unknown; minOrderAmount?: unknown; prepareMinutes?: unknown; businessHours?: unknown; address: unknown; phone?: unknown }) {
     const name = stringValue(input.name);
     const description = stringValue(input.description);
     const address = stringValue(input.address);
     const phone = stringValue(input.phone);
     const logo = normalizeImage(input.logo);
     const coverImage = input.coverImage === undefined ? null : normalizeImage(input.coverImage);
+    const businessLicenseImage = input.businessLicenseImage === undefined ? null : normalizeImage(input.businessLicenseImage);
     const announcement = stringValue(input.announcement);
     const minOrderAmount = input.minOrderAmount === undefined ? new Prisma.Decimal(0) : decimal(input.minOrderAmount, "起送金额").toDecimalPlaces(2);
     const prepareMinutes = input.prepareMinutes === undefined ? 15 : intOr(input.prepareMinutes, 0);
@@ -413,12 +415,14 @@ export class FoodService {
       select: { id: true },
     });
     if (existing) throw new FoodError(409, "当前账号已有待审核或已通过的商家");
+    if (!coverImage) throw new FoodError(400, "Storefront photo is required");
+    if (!businessLicenseImage) throw new FoodError(400, "Business license image is required");
     const settings = await getSettings();
     const merchant = await prisma.merchant.create({
-      data: { owner_id: input.ownerId, name, description: description || null, logo, cover_image: coverImage, announcement: announcement || null, min_order_amount: minOrderAmount, prepare_minutes: prepareMinutes, business_hours: businessHours ?? Prisma.JsonNull, address, phone: phone || null, commission_rate: settings.commissionRate },
+      data: { owner_id: input.ownerId, name, description: description || null, logo, cover_image: coverImage, business_license_image: businessLicenseImage, announcement: announcement || null, min_order_amount: minOrderAmount, prepare_minutes: prepareMinutes, business_hours: businessHours ?? Prisma.JsonNull, address, phone: phone || null, commission_rate: settings.commissionRate },
       include: { _count: { select: { menu_items: true } } },
     });
-    return mapMerchant(merchant);
+    return mapMerchant(merchant, true);
   }
 
   async getMyMerchant(ownerId: number) {
@@ -428,10 +432,10 @@ export class FoodService {
       include: { _count: { select: { menu_items: true } }, categories: { orderBy: [{ sort_order: "asc" }, { id: "asc" }] }, menu_items: { orderBy: [{ sort_order: "asc" }, { id: "asc" }] } },
     });
     if (!merchant) return null;
-    return { merchant: mapMerchant(merchant), categories: merchant.categories.map(mapFoodCategory), menu_items: merchant.menu_items.map(mapMenuItem) };
+    return { merchant: mapMerchant(merchant, true), categories: merchant.categories.map(mapFoodCategory), menu_items: merchant.menu_items.map(mapMenuItem) };
   }
 
-  async updateMyMerchant(input: { ownerId: number; merchantId: number; name?: unknown; description?: unknown; logo?: unknown; coverImage?: unknown; announcement?: unknown; minOrderAmount?: unknown; prepareMinutes?: unknown; businessHours?: unknown; address?: unknown; phone?: unknown; isOpen?: unknown }) {
+  async updateMyMerchant(input: { ownerId: number; merchantId: number; name?: unknown; description?: unknown; logo?: unknown; coverImage?: unknown; businessLicenseImage?: unknown; announcement?: unknown; minOrderAmount?: unknown; prepareMinutes?: unknown; businessHours?: unknown; address?: unknown; phone?: unknown; isOpen?: unknown }) {
     const merchant = await getOwnedMerchant(input.merchantId, input.ownerId);
     if (merchant.status === MerchantStatus.DISABLED) throw new FoodError(409, "商家已被停用");
     const data: Prisma.MerchantUpdateInput = {};
@@ -449,6 +453,7 @@ export class FoodService {
     }
     if (input.logo !== undefined) data.logo = normalizeImage(input.logo);
     if (input.coverImage !== undefined) data.cover_image = normalizeImage(input.coverImage);
+    if (input.businessLicenseImage !== undefined) data.business_license_image = normalizeImage(input.businessLicenseImage);
     if (input.announcement !== undefined) {
       const announcement = stringValue(input.announcement);
       if (announcement.length > 500) throw new FoodError(400, "商家公告不能超过 500 个字符");
@@ -474,7 +479,7 @@ export class FoodService {
     }
     if (input.isOpen !== undefined) data.is_open = input.isOpen === true || String(input.isOpen).toLowerCase() === "true" || String(input.isOpen) === "1";
     const updated = await prisma.merchant.update({ where: { id: merchant.id }, data, include: { _count: { select: { menu_items: true } } } });
-    return mapMerchant(updated);
+    return mapMerchant(updated, true);
   }
 
   async createMenuItem(input: { ownerId: number; merchantId: number; categoryId?: unknown; name: unknown; description?: unknown; image?: unknown; price: unknown; originalPrice?: unknown; optionGroups?: unknown; stock?: unknown; sortOrder?: unknown }) {
@@ -486,11 +491,13 @@ export class FoodService {
     const stock = input.stock === undefined || input.stock === "" ? -1 : intOr(input.stock, -2);
     const categoryId = input.categoryId === undefined || input.categoryId === null || input.categoryId === "" ? null : positiveId(input.categoryId, "分类 ID");
     const optionGroups = parseFoodOptionGroups(input.optionGroups);
+    const image = normalizeImage(input.image);
     if (categoryId && !(await prisma.foodCategory.findFirst({ where: { id: categoryId, merchant_id: merchant.id } }))) throw new FoodError(400, "菜品分类不属于当前商家");
     if (name.length < 1 || name.length > 100 || description.length > 500 || stock < -1) throw new FoodError(400, "菜品信息不合法");
+    if (!image) throw new FoodError(400, "Menu item image is required");
     await Promise.all([ensureSafeText(name, "菜品名称"), ensureSafeText(description, "菜品介绍")]);
     const item = await prisma.menuItem.create({
-      data: { merchant_id: merchant.id, category_id: categoryId, name, description: description || null, image: normalizeImage(input.image), price: itemPrice, original_price: input.originalPrice === undefined || input.originalPrice === "" ? null : decimal(input.originalPrice, "菜品原价", 0.01).toDecimalPlaces(2), option_groups: optionGroups.length ? optionGroups : Prisma.JsonNull, stock, sort_order: intOr(input.sortOrder, 0) },
+      data: { merchant_id: merchant.id, category_id: categoryId, name, description: description || null, image, price: itemPrice, original_price: input.originalPrice === undefined || input.originalPrice === "" ? null : decimal(input.originalPrice, "菜品原价", 0.01).toDecimalPlaces(2), option_groups: optionGroups.length ? optionGroups : Prisma.JsonNull, stock, sort_order: intOr(input.sortOrder, 0) },
     });
     return mapMenuItem(item);
   }
@@ -848,7 +855,7 @@ export class FoodService {
       prisma.merchant.count({ where }),
       prisma.merchant.findMany({ where, orderBy: [{ status: "asc" }, { created_at: "desc" }], skip, take: pageSize, include: { owner: { select: { id: true, nickname: true, phone: true } }, _count: { select: { menu_items: true } } } }),
     ]);
-    return { page, page_size: pageSize, total, list: merchants.map(mapMerchant) };
+    return { page, page_size: pageSize, total, list: merchants.map((merchant) => mapMerchant(merchant, true)) };
   }
 
   async auditMerchant(input: { merchantId: number; adminId: number; action: unknown; auditNote?: unknown; commissionRate?: unknown }) {
@@ -864,6 +871,9 @@ export class FoodService {
     const rate = input.commissionRate === undefined ? merchant.commission_rate : decimal(input.commissionRate, "商家抽成");
     if (rate.gt(0.8)) throw new FoodError(400, "商家抽成不能超过 80% ");
     const now = new Date();
+    if (status === MerchantStatus.APPROVED && (!merchant.cover_image || !merchant.business_license_image)) {
+      throw new FoodError(409, "Storefront photo and business license are required before approval");
+    }
     await prisma.$transaction([
       prisma.merchant.update({ where: { id: merchant.id }, data: { status, audit_note: auditNote || null, commission_rate: action === "APPROVE" && input.commissionRate === undefined ? settings.commissionRate : rate, ...(status === MerchantStatus.DISABLED ? { is_open: false } : {}) } }),
       prisma.adminLog.create({ data: { admin_id: input.adminId, action: "MERCHANT_AUDIT", target_type: "MERCHANT", target_id: merchant.id, detail_json: { action: action.toLowerCase(), audit_note: auditNote || null, commission_rate: rate.toString(), at: now.toISOString() } as Prisma.InputJsonValue } }),

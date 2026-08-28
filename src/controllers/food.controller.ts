@@ -36,7 +36,7 @@ export const applyMerchant: RequestHandler = async (req, res, next) => {
   try {
     if (!req.user) return res.status(401).json({ error: "Unauthorized" });
     const body = (req.body ?? {}) as Record<string, unknown>;
-    const merchant = await foodService.applyMerchant({ ownerId: req.user.id, name: body.name, description: body.description, logo: body.logo, coverImage: body.cover_image ?? body.coverImage, announcement: body.announcement, minOrderAmount: body.min_order_amount ?? body.minOrderAmount, prepareMinutes: body.prepare_minutes ?? body.prepareMinutes, businessHours: body.business_hours ?? body.businessHours, address: body.address, phone: body.phone });
+    const merchant = await foodService.applyMerchant({ ownerId: req.user.id, name: body.name, description: body.description, logo: body.logo, coverImage: body.cover_image ?? body.coverImage, businessLicenseImage: body.business_license_image ?? body.businessLicenseImage, announcement: body.announcement, minOrderAmount: body.min_order_amount ?? body.minOrderAmount, prepareMinutes: body.prepare_minutes ?? body.prepareMinutes, businessHours: body.business_hours ?? body.businessHours, address: body.address, phone: body.phone });
     res.status(201).json({ merchant });
   } catch (error) { handleError(error, res, next); }
 };
@@ -52,7 +52,7 @@ export const updateMyMerchant: RequestHandler = async (req, res, next) => {
   try {
     if (!req.user) return res.status(401).json({ error: "Unauthorized" });
     const body = (req.body ?? {}) as Record<string, unknown>;
-    const merchant = await foodService.updateMyMerchant({ ownerId: req.user.id, merchantId: merchantId(req), name: body.name, description: body.description, logo: body.logo, coverImage: body.cover_image ?? body.coverImage, announcement: body.announcement, minOrderAmount: body.min_order_amount ?? body.minOrderAmount, prepareMinutes: body.prepare_minutes ?? body.prepareMinutes, businessHours: body.business_hours ?? body.businessHours, address: body.address, phone: body.phone, isOpen: body.is_open ?? body.isOpen });
+    const merchant = await foodService.updateMyMerchant({ ownerId: req.user.id, merchantId: merchantId(req), name: body.name, description: body.description, logo: body.logo, coverImage: body.cover_image ?? body.coverImage, businessLicenseImage: body.business_license_image ?? body.businessLicenseImage, announcement: body.announcement, minOrderAmount: body.min_order_amount ?? body.minOrderAmount, prepareMinutes: body.prepare_minutes ?? body.prepareMinutes, businessHours: body.business_hours ?? body.businessHours, address: body.address, phone: body.phone, isOpen: body.is_open ?? body.isOpen });
     res.status(200).json({ merchant });
   } catch (error) { handleError(error, res, next); }
 };

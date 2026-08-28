@@ -584,6 +584,7 @@ model Merchant {
   address         String         @db.VarChar(160)
   phone           String?        @db.VarChar(30)
   cover_image     String?        @db.VarChar(500)
+  business_license_image String? @db.VarChar(500)
   announcement    String?        @db.VarChar(500)
   min_order_amount Decimal       @default(0) @db.Decimal(12, 2)
   prepare_minutes Int            @default(15)
