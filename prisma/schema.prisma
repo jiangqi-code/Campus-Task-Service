@@ -591,6 +591,7 @@ model Merchant {
   audit_note      String?        @db.VarChar(300)
   commission_rate Decimal        @default(0.1000) @db.Decimal(5, 4)
   is_open         Boolean        @default(true)
+  business_hours  Json?
   created_at      DateTime       @default(now())
   updated_at      DateTime       @default(now()) @updatedAt
 
@@ -613,6 +614,7 @@ model MenuItem {
   image       String?  @db.VarChar(500)
   price       Decimal  @db.Decimal(12, 2)
   original_price Decimal? @db.Decimal(12, 2)
+  option_groups Json?
   stock       Int      @default(-1)
   is_active   Boolean  @default(true)
   sort_order  Int      @default(0)
@@ -648,6 +650,7 @@ model FoodCategory {
 model FoodOrder {
   id              Int             @id @default(autoincrement())
   order_no        String?         @unique @db.VarChar(40)
+  user_coupon_id  String?         @unique
   user_id         Int
   merchant_id     Int
   runner_id       Int?
@@ -687,6 +690,7 @@ model FoodOrder {
   timelines FoodOrderTimeline[]
   wallet_logs WalletLog[] @relation("FoodWalletLog")
   earnings Earning[] @relation("FoodOrderEarning")
+  user_coupon UserCoupon? @relation("FoodOrderCoupon", fields: [user_coupon_id], references: [id], onDelete: SetNull)
 
   @@index([user_id, created_at])
   @@index([merchant_id, status, created_at])
@@ -702,6 +706,7 @@ model FoodOrderItem {
   menu_item_id Int?
   item_name    String   @db.VarChar(100)
   unit_price   Decimal  @db.Decimal(12, 2)
+  selected_options Json?
   quantity     Int
   created_at   DateTime @default(now())
 
@@ -953,6 +958,7 @@ model UserCoupon {
   coupon Coupon @relation(fields: [coupon_id], references: [id], onDelete: Cascade)
   order  Order? @relation(fields: [order_id], references: [id], onDelete: SetNull)
   task   Task?
+  food_order FoodOrder? @relation("FoodOrderCoupon")
 
   @@index([user_id, status, expired_at])
   @@index([coupon_id, status])

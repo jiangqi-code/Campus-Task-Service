@@ -36,7 +36,7 @@ export const applyMerchant: RequestHandler = async (req, res, next) => {
   try {
     if (!req.user) return res.status(401).json({ error: "Unauthorized" });
     const body = (req.body ?? {}) as Record<string, unknown>;
-    const merchant = await foodService.applyMerchant({ ownerId: req.user.id, name: body.name, description: body.description, logo: body.logo, coverImage: body.cover_image ?? body.coverImage, announcement: body.announcement, minOrderAmount: body.min_order_amount ?? body.minOrderAmount, prepareMinutes: body.prepare_minutes ?? body.prepareMinutes, address: body.address, phone: body.phone });
+    const merchant = await foodService.applyMerchant({ ownerId: req.user.id, name: body.name, description: body.description, logo: body.logo, coverImage: body.cover_image ?? body.coverImage, announcement: body.announcement, minOrderAmount: body.min_order_amount ?? body.minOrderAmount, prepareMinutes: body.prepare_minutes ?? body.prepareMinutes, businessHours: body.business_hours ?? body.businessHours, address: body.address, phone: body.phone });
     res.status(201).json({ merchant });
   } catch (error) { handleError(error, res, next); }
 };
@@ -52,7 +52,7 @@ export const updateMyMerchant: RequestHandler = async (req, res, next) => {
   try {
     if (!req.user) return res.status(401).json({ error: "Unauthorized" });
     const body = (req.body ?? {}) as Record<string, unknown>;
-    const merchant = await foodService.updateMyMerchant({ ownerId: req.user.id, merchantId: merchantId(req), name: body.name, description: body.description, logo: body.logo, coverImage: body.cover_image ?? body.coverImage, announcement: body.announcement, minOrderAmount: body.min_order_amount ?? body.minOrderAmount, prepareMinutes: body.prepare_minutes ?? body.prepareMinutes, address: body.address, phone: body.phone, isOpen: body.is_open ?? body.isOpen });
+    const merchant = await foodService.updateMyMerchant({ ownerId: req.user.id, merchantId: merchantId(req), name: body.name, description: body.description, logo: body.logo, coverImage: body.cover_image ?? body.coverImage, announcement: body.announcement, minOrderAmount: body.min_order_amount ?? body.minOrderAmount, prepareMinutes: body.prepare_minutes ?? body.prepareMinutes, businessHours: body.business_hours ?? body.businessHours, address: body.address, phone: body.phone, isOpen: body.is_open ?? body.isOpen });
     res.status(200).json({ merchant });
   } catch (error) { handleError(error, res, next); }
 };
@@ -61,7 +61,7 @@ export const createMenuItem: RequestHandler = async (req, res, next) => {
   try {
     if (!req.user) return res.status(401).json({ error: "Unauthorized" });
     const body = (req.body ?? {}) as Record<string, unknown>;
-    const item = await foodService.createMenuItem({ ownerId: req.user.id, merchantId: merchantId(req), categoryId: body.category_id ?? body.categoryId, name: body.name, description: body.description, image: body.image, price: body.price, originalPrice: body.original_price ?? body.originalPrice, stock: body.stock, sortOrder: body.sort_order ?? body.sortOrder });
+    const item = await foodService.createMenuItem({ ownerId: req.user.id, merchantId: merchantId(req), categoryId: body.category_id !== undefined ? body.category_id : body.categoryId, name: body.name, description: body.description, image: body.image, price: body.price, originalPrice: body.original_price !== undefined ? body.original_price : body.originalPrice, optionGroups: body.option_groups !== undefined ? body.option_groups : body.optionGroups, stock: body.stock, sortOrder: body.sort_order !== undefined ? body.sort_order : body.sortOrder });
     res.status(201).json({ item });
   } catch (error) { handleError(error, res, next); }
 };
@@ -70,7 +70,7 @@ export const updateMenuItem: RequestHandler = async (req, res, next) => {
   try {
     if (!req.user) return res.status(401).json({ error: "Unauthorized" });
     const body = (req.body ?? {}) as Record<string, unknown>;
-    const item = await foodService.updateMenuItem({ ownerId: req.user.id, merchantId: merchantId(req), itemId: itemId(req), categoryId: body.category_id ?? body.categoryId, name: body.name, description: body.description, image: body.image, price: body.price, originalPrice: body.original_price ?? body.originalPrice, stock: body.stock, sortOrder: body.sort_order ?? body.sortOrder, isActive: body.is_active ?? body.isActive });
+    const item = await foodService.updateMenuItem({ ownerId: req.user.id, merchantId: merchantId(req), itemId: itemId(req), categoryId: body.category_id !== undefined ? body.category_id : body.categoryId, name: body.name, description: body.description, image: body.image, price: body.price, originalPrice: body.original_price !== undefined ? body.original_price : body.originalPrice, optionGroups: body.option_groups !== undefined ? body.option_groups : body.optionGroups, stock: body.stock, sortOrder: body.sort_order !== undefined ? body.sort_order : body.sortOrder, isActive: body.is_active !== undefined ? body.is_active : body.isActive });
     res.status(200).json({ item });
   } catch (error) { handleError(error, res, next); }
 };
@@ -87,7 +87,7 @@ export const createFoodOrder: RequestHandler = async (req, res, next) => {
   try {
     if (!req.user) return res.status(401).json({ error: "Unauthorized" });
     const body = (req.body ?? {}) as Record<string, unknown>;
-    const order = await foodService.createOrder({ userId: req.user.id, merchantId: body.merchant_id ?? body.merchantId, items: body.items, deliveryAddress: body.delivery_address ?? body.deliveryAddress, deliveryLat: body.delivery_lat ?? body.deliveryLat, deliveryLng: body.delivery_lng ?? body.deliveryLng, contactPhone: body.contact_phone ?? body.contactPhone, remark: body.remark });
+    const order = await foodService.createOrder({ userId: req.user.id, merchantId: body.merchant_id ?? body.merchantId, userCouponId: body.user_coupon_id ?? body.userCouponId, items: body.items, deliveryAddress: body.delivery_address ?? body.deliveryAddress, deliveryLat: body.delivery_lat ?? body.deliveryLat, deliveryLng: body.delivery_lng ?? body.deliveryLng, contactPhone: body.contact_phone ?? body.contactPhone, remark: body.remark });
     res.status(201).json({ order });
   } catch (error) { handleError(error, res, next); }
 };
@@ -95,8 +95,8 @@ export const createFoodOrder: RequestHandler = async (req, res, next) => {
 export const quoteFoodOrder: RequestHandler = async (req, res, next) => {
   try {
     const body = (req.body ?? {}) as Record<string, unknown>;
-    const quote = await foodService.quoteOrder({ merchantId: body.merchant_id ?? body.merchantId, items: body.items });
-    res.status(200).json({ quote: { item_amount: Number(quote.itemAmount), delivery_fee: Number(quote.deliveryFee), total_amount: Number(quote.totalAmount), merchant: { id: quote.merchant.id, name: quote.merchant.name, min_order_amount: Number(quote.merchant.min_order_amount), prepare_minutes: quote.merchant.prepare_minutes }, items: quote.menuItems.map((item) => ({ id: item.id, name: item.name, price: Number(item.price), quantity: quote.quantities.get(item.id) ?? 0 })) } });
+    const quote = await foodService.quoteOrder({ merchantId: body.merchant_id ?? body.merchantId, items: body.items, userId: req.user?.id, userCouponId: body.user_coupon_id ?? body.userCouponId });
+    res.status(200).json({ quote: { item_amount: Number(quote.itemAmount), delivery_fee: Number(quote.deliveryFee), discount_amount: Number(quote.discountAmount), total_amount: Number(quote.totalAmount), payable_amount: Number(quote.payableAmount), merchant: { id: quote.merchant.id, name: quote.merchant.name, min_order_amount: Number(quote.merchant.min_order_amount), prepare_minutes: quote.merchant.prepare_minutes }, items: quote.lines.map((line) => ({ id: line.menuItem.id, name: line.menuItem.name, base_price: Number(line.menuItem.price), price: Number(line.unitPrice), quantity: line.quantity, selected_options: line.selectedOptions })) } });
   } catch (error) { handleError(error, res, next); }
 };
 

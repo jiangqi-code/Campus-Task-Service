@@ -1,6 +1,7 @@
 import { FoodOrderStatus, MerchantStatus, Prisma, PrismaClient } from "@prisma/client";
 import { sensitiveWordService } from "./sensitiveWord.service";
 import { notificationService } from "./notification.service";
+import { CouponError, consumeUserCoupon, quoteUserCoupon } from "./coupon.service";
 
 const prisma = new PrismaClient();
 
@@ -64,7 +65,133 @@ const parsePage = (page: unknown, pageSize: unknown, max = 50) => {
 
 const toNumber = (value: Prisma.Decimal | number | null | undefined) => Number(value ?? 0);
 
-const mapMerchant = (merchant: any) => ({
+type BusinessHour = { day: number; enabled: boolean; start: string; end: string };
+type FoodOptionChoice = { name: string; price_delta: number };
+type FoodOptionGroup = { name: string; required: boolean; choices: FoodOptionChoice[] };
+type SelectedFoodOption = { group_name: string; choice_name: string; price_delta: number };
+
+const businessHourEnabled = (value: unknown) => value === undefined || value === true || value === 1 || String(value).toLowerCase() === "true" || String(value) === "1";
+
+const businessMinutes = (value: unknown, label: string) => {
+  const time = stringValue(value);
+  const match = /^(?:[01]\d|2[0-3]):[0-5]\d$/.exec(time);
+  if (!match) throw new FoodError(400, `${label}应为 HH:mm 格式`);
+  return Number.parseInt(time.slice(0, 2), 10) * 60 + Number.parseInt(time.slice(3), 10);
+};
+
+const parseBusinessHours = (value: unknown): BusinessHour[] | null => {
+  if (value === undefined || value === null || value === "") return null;
+  let raw = value;
+  if (typeof raw === "string") {
+    try { raw = JSON.parse(raw); } catch { throw new FoodError(400, "营业时段格式不合法"); }
+  }
+  if (!Array.isArray(raw)) throw new FoodError(400, "营业时段格式不合法");
+  if (raw.length === 0) return null;
+  if (raw.length > 7) throw new FoodError(400, "营业时段最多设置 7 天");
+  const days = new Set<number>();
+  const result = raw.map((item) => {
+    if (!item || typeof item !== "object") throw new FoodError(400, "营业时段格式不合法");
+    const day = intOr((item as any).day, -1);
+    if (day < 0 || day > 6 || days.has(day)) throw new FoodError(400, "营业日期不合法或重复");
+    days.add(day);
+    const start = stringValue((item as any).start);
+    const end = stringValue((item as any).end);
+    if (businessMinutes(start, "营业开始时间") >= businessMinutes(end, "营业结束时间")) throw new FoodError(400, "营业结束时间应晚于开始时间");
+    return { day, enabled: businessHourEnabled((item as any).enabled), start, end };
+  });
+  return result.sort((a, b) => a.day - b.day);
+};
+
+const savedBusinessHours = (value: unknown): BusinessHour[] | null => {
+  try { return parseBusinessHours(value); } catch { return null; }
+};
+
+const parseFoodOptionGroups = (value: unknown): FoodOptionGroup[] => {
+  if (value === undefined || value === null || value === "") return [];
+  let raw = value;
+  if (typeof raw === "string") {
+    try { raw = JSON.parse(raw); } catch { throw new FoodError(400, "菜品规格格式不合法"); }
+  }
+  if (!Array.isArray(raw)) throw new FoodError(400, "菜品规格格式不合法");
+  if (raw.length > 5) throw new FoodError(400, "每个菜品最多设置 5 组规格");
+  const groupNames = new Set<string>();
+  return raw.map((group) => {
+    if (!group || typeof group !== "object") throw new FoodError(400, "菜品规格格式不合法");
+    const name = stringValue((group as any).name);
+    const choicesRaw = (group as any).choices;
+    if (!name || name.length > 30 || groupNames.has(name) || !Array.isArray(choicesRaw) || choicesRaw.length < 1 || choicesRaw.length > 12) throw new FoodError(400, "规格组名称或选项数量不合法");
+    groupNames.add(name);
+    const choiceNames = new Set<string>();
+    const choices = choicesRaw.map((choice: any) => {
+      const choiceName = stringValue(choice?.name);
+      if (!choiceName || choiceName.length > 40 || choiceNames.has(choiceName)) throw new FoodError(400, "规格选项名称不合法或重复");
+      choiceNames.add(choiceName);
+      const priceDelta = decimal(choice?.price_delta ?? choice?.priceDelta ?? 0, "规格加价", -100).toDecimalPlaces(2);
+      return { name: choiceName, price_delta: Number(priceDelta) };
+    });
+    return { name, required: businessHourEnabled((group as any).required), choices };
+  });
+};
+
+const savedFoodOptionGroups = (value: unknown): FoodOptionGroup[] => {
+  try { return parseFoodOptionGroups(value); } catch { return []; }
+};
+
+const parseSelectedFoodOptions = (value: unknown, optionGroups: FoodOptionGroup[]): SelectedFoodOption[] => {
+  if (value === undefined || value === null || value === "") {
+    if (optionGroups.some((group) => group.required)) throw new FoodError(400, "请选择必选规格");
+    return [];
+  }
+  let raw = value;
+  if (typeof raw === "string") {
+    try { raw = JSON.parse(raw); } catch { throw new FoodError(400, "所选规格格式不合法"); }
+  }
+  if (!Array.isArray(raw) || raw.length > optionGroups.length) throw new FoodError(400, "所选规格格式不合法");
+  const selections = new Map<string, string>();
+  for (const item of raw) {
+    if (!item || typeof item !== "object") throw new FoodError(400, "所选规格格式不合法");
+    const groupName = stringValue((item as any).group_name ?? (item as any).groupName ?? (item as any).group);
+    const choiceName = stringValue((item as any).choice_name ?? (item as any).choiceName ?? (item as any).choice);
+    if (!groupName || !choiceName || selections.has(groupName)) throw new FoodError(400, "所选规格不合法或重复");
+    selections.set(groupName, choiceName);
+  }
+  const result: SelectedFoodOption[] = [];
+  for (const group of optionGroups) {
+    const choiceName = selections.get(group.name);
+    if (!choiceName) {
+      if (group.required) throw new FoodError(400, `请选择${group.name}`);
+      continue;
+    }
+    const choice = group.choices.find((item) => item.name === choiceName);
+    if (!choice) throw new FoodError(400, `${group.name}选项不可用`);
+    result.push({ group_name: group.name, choice_name: choice.name, price_delta: choice.price_delta });
+  }
+  if (selections.size !== result.length) throw new FoodError(400, "所选规格不属于当前菜品");
+  return result;
+};
+
+const currentShanghaiTime = () => {
+  const parts = new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", weekday: "long", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(new Date());
+  const values = new Map(parts.map((part) => [part.type, part.value]));
+  const weekday = values.get("weekday") ?? "";
+  const day = ["日", "一", "二", "三", "四", "五", "六"].findIndex((name) => weekday.includes(name));
+  return { day, minutes: Number.parseInt(values.get("hour") ?? "0", 10) * 60 + Number.parseInt(values.get("minute") ?? "0", 10) };
+};
+
+const merchantAvailability = (merchant: any) => {
+  const businessHours = savedBusinessHours(merchant.business_hours);
+  const manualOpen = Boolean(merchant.is_open);
+  if (!manualOpen || merchant.status !== MerchantStatus.APPROVED) return { businessHours, isOrderable: false };
+  if (!businessHours?.length) return { businessHours, isOrderable: true };
+  const now = currentShanghaiTime();
+  const slot = businessHours.find((item) => item.day === now.day);
+  const isOrderable = Boolean(slot?.enabled) && now.minutes >= businessMinutes(slot!.start, "营业开始时间") && now.minutes < businessMinutes(slot!.end, "营业结束时间");
+  return { businessHours, isOrderable };
+};
+
+const mapMerchant = (merchant: any) => {
+  const availability = merchantAvailability(merchant);
+  return {
   id: merchant.id,
   owner_id: merchant.owner_id,
   name: merchant.name,
@@ -80,11 +207,15 @@ const mapMerchant = (merchant: any) => ({
   audit_note: merchant.audit_note,
   commission_rate: toNumber(merchant.commission_rate),
   is_open: merchant.is_open,
+  business_hours: availability.businessHours,
+  is_orderable: availability.isOrderable,
+  business_status: availability.isOrderable ? "OPEN" : "CLOSED",
   created_at: merchant.created_at,
   updated_at: merchant.updated_at,
   owner: merchant.owner,
   menu_item_count: merchant._count?.menu_items,
-});
+  };
+};
 
 const mapMenuItem = (item: any) => ({
   id: item.id,
@@ -95,6 +226,7 @@ const mapMenuItem = (item: any) => ({
   image: item.image,
   price: toNumber(item.price),
   original_price: item.original_price === null || item.original_price === undefined ? null : toNumber(item.original_price),
+  option_groups: savedFoodOptionGroups(item.option_groups),
   stock: item.stock,
   is_active: item.is_active,
   sort_order: item.sort_order,
@@ -149,7 +281,7 @@ const mapFoodOrder = (order: any) => ({
   user: order.user,
   runner: order.runner,
   items: Array.isArray(order.items)
-    ? order.items.map((item: any) => ({ id: item.id, menu_item_id: item.menu_item_id, item_name: item.item_name, unit_price: toNumber(item.unit_price), quantity: item.quantity }))
+    ? order.items.map((item: any) => ({ id: item.id, menu_item_id: item.menu_item_id, item_name: item.item_name, unit_price: toNumber(item.unit_price), selected_options: item.selected_options, quantity: item.quantity }))
     : [],
   timeline: Array.isArray(order.timelines)
     ? order.timelines.map((row: any) => ({ id: row.id, from_status: row.from_status, to_status: row.to_status, actor_role: row.actor_role, note: row.note, created_at: row.created_at, actor: row.actor }))
@@ -157,7 +289,7 @@ const mapFoodOrder = (order: any) => ({
 });
 
 const orderInclude = {
-  merchant: { select: { id: true, name: true, logo: true, cover_image: true, address: true, phone: true, is_open: true, status: true, commission_rate: true, prepare_minutes: true } },
+  merchant: { select: { id: true, name: true, logo: true, cover_image: true, address: true, phone: true, is_open: true, business_hours: true, status: true, commission_rate: true, prepare_minutes: true } },
   user: { select: { id: true, nickname: true, phone: true } },
   runner: { select: { id: true, nickname: true, phone: true } },
   items: { orderBy: { id: "asc" as const } },
@@ -237,17 +369,13 @@ export class FoodService {
       is_open: true,
       ...(keyword ? { OR: [{ name: { contains: keyword } }, { address: { contains: keyword } }] } : {}),
     };
-    const [total, merchants] = await Promise.all([
-      prisma.merchant.count({ where }),
-      prisma.merchant.findMany({
-        where,
-        orderBy: { created_at: "desc" },
-        skip,
-        take: pageSize,
-        include: { _count: { select: { menu_items: { where: { is_active: true } } } } },
-      }),
-    ]);
-    return { page, page_size: pageSize, total, list: merchants.map(mapMerchant) };
+    const merchants = await prisma.merchant.findMany({
+      where,
+      orderBy: { created_at: "desc" },
+      include: { _count: { select: { menu_items: { where: { is_active: true } } } } },
+    });
+    const orderableMerchants = merchants.map(mapMerchant).filter((merchant) => merchant.is_orderable);
+    return { page, page_size: pageSize, total: orderableMerchants.length, list: orderableMerchants.slice(skip, skip + pageSize) };
   }
 
   async getMerchantDetail(input: { merchantId: number; viewerId?: number; isAdmin?: boolean }) {
@@ -265,7 +393,7 @@ export class FoodService {
     return { merchant: mapMerchant(merchant), categories: merchant.categories.map(mapFoodCategory), menu_items: merchant.menu_items.map(mapMenuItem) };
   }
 
-  async applyMerchant(input: { ownerId: number; name: unknown; description?: unknown; logo?: unknown; coverImage?: unknown; announcement?: unknown; minOrderAmount?: unknown; prepareMinutes?: unknown; address: unknown; phone?: unknown }) {
+  async applyMerchant(input: { ownerId: number; name: unknown; description?: unknown; logo?: unknown; coverImage?: unknown; announcement?: unknown; minOrderAmount?: unknown; prepareMinutes?: unknown; businessHours?: unknown; address: unknown; phone?: unknown }) {
     const name = stringValue(input.name);
     const description = stringValue(input.description);
     const address = stringValue(input.address);
@@ -275,6 +403,7 @@ export class FoodService {
     const announcement = stringValue(input.announcement);
     const minOrderAmount = input.minOrderAmount === undefined ? new Prisma.Decimal(0) : decimal(input.minOrderAmount, "起送金额").toDecimalPlaces(2);
     const prepareMinutes = input.prepareMinutes === undefined ? 15 : intOr(input.prepareMinutes, 0);
+    const businessHours = parseBusinessHours(input.businessHours);
     if (name.length < 2 || name.length > 80) throw new FoodError(400, "商家名称应为 2-80 个字符");
     if (!address || address.length > 160) throw new FoodError(400, "请填写 1-160 个字符的商家地址");
     if (description.length > 2000 || announcement.length > 500 || phone.length > 30 || prepareMinutes < 1 || prepareMinutes > 180) throw new FoodError(400, "商家资料长度不合法");
@@ -286,7 +415,7 @@ export class FoodService {
     if (existing) throw new FoodError(409, "当前账号已有待审核或已通过的商家");
     const settings = await getSettings();
     const merchant = await prisma.merchant.create({
-      data: { owner_id: input.ownerId, name, description: description || null, logo, cover_image: coverImage, announcement: announcement || null, min_order_amount: minOrderAmount, prepare_minutes: prepareMinutes, address, phone: phone || null, commission_rate: settings.commissionRate },
+      data: { owner_id: input.ownerId, name, description: description || null, logo, cover_image: coverImage, announcement: announcement || null, min_order_amount: minOrderAmount, prepare_minutes: prepareMinutes, business_hours: businessHours ?? Prisma.JsonNull, address, phone: phone || null, commission_rate: settings.commissionRate },
       include: { _count: { select: { menu_items: true } } },
     });
     return mapMerchant(merchant);
@@ -302,7 +431,7 @@ export class FoodService {
     return { merchant: mapMerchant(merchant), categories: merchant.categories.map(mapFoodCategory), menu_items: merchant.menu_items.map(mapMenuItem) };
   }
 
-  async updateMyMerchant(input: { ownerId: number; merchantId: number; name?: unknown; description?: unknown; logo?: unknown; coverImage?: unknown; announcement?: unknown; minOrderAmount?: unknown; prepareMinutes?: unknown; address?: unknown; phone?: unknown; isOpen?: unknown }) {
+  async updateMyMerchant(input: { ownerId: number; merchantId: number; name?: unknown; description?: unknown; logo?: unknown; coverImage?: unknown; announcement?: unknown; minOrderAmount?: unknown; prepareMinutes?: unknown; businessHours?: unknown; address?: unknown; phone?: unknown; isOpen?: unknown }) {
     const merchant = await getOwnedMerchant(input.merchantId, input.ownerId);
     if (merchant.status === MerchantStatus.DISABLED) throw new FoodError(409, "商家已被停用");
     const data: Prisma.MerchantUpdateInput = {};
@@ -332,6 +461,7 @@ export class FoodService {
       if (prepareMinutes < 1 || prepareMinutes > 180) throw new FoodError(400, "预计备餐时间应为 1-180 分钟");
       data.prepare_minutes = prepareMinutes;
     }
+    if (input.businessHours !== undefined) data.business_hours = parseBusinessHours(input.businessHours) ?? Prisma.JsonNull;
     if (input.address !== undefined) {
       const address = stringValue(input.address);
       if (!address || address.length > 160) throw new FoodError(400, "请填写 1-160 个字符的商家地址");
@@ -347,7 +477,7 @@ export class FoodService {
     return mapMerchant(updated);
   }
 
-  async createMenuItem(input: { ownerId: number; merchantId: number; categoryId?: unknown; name: unknown; description?: unknown; image?: unknown; price: unknown; originalPrice?: unknown; stock?: unknown; sortOrder?: unknown }) {
+  async createMenuItem(input: { ownerId: number; merchantId: number; categoryId?: unknown; name: unknown; description?: unknown; image?: unknown; price: unknown; originalPrice?: unknown; optionGroups?: unknown; stock?: unknown; sortOrder?: unknown }) {
     const merchant = await getOwnedMerchant(input.merchantId, input.ownerId);
     if (merchant.status === MerchantStatus.DISABLED) throw new FoodError(409, "商家已被停用");
     const name = stringValue(input.name);
@@ -355,16 +485,17 @@ export class FoodService {
     const itemPrice = decimal(input.price, "菜品价格", 0.01).toDecimalPlaces(2);
     const stock = input.stock === undefined || input.stock === "" ? -1 : intOr(input.stock, -2);
     const categoryId = input.categoryId === undefined || input.categoryId === null || input.categoryId === "" ? null : positiveId(input.categoryId, "分类 ID");
+    const optionGroups = parseFoodOptionGroups(input.optionGroups);
     if (categoryId && !(await prisma.foodCategory.findFirst({ where: { id: categoryId, merchant_id: merchant.id } }))) throw new FoodError(400, "菜品分类不属于当前商家");
     if (name.length < 1 || name.length > 100 || description.length > 500 || stock < -1) throw new FoodError(400, "菜品信息不合法");
     await Promise.all([ensureSafeText(name, "菜品名称"), ensureSafeText(description, "菜品介绍")]);
     const item = await prisma.menuItem.create({
-      data: { merchant_id: merchant.id, category_id: categoryId, name, description: description || null, image: normalizeImage(input.image), price: itemPrice, original_price: input.originalPrice === undefined || input.originalPrice === "" ? null : decimal(input.originalPrice, "菜品原价", 0.01).toDecimalPlaces(2), stock, sort_order: intOr(input.sortOrder, 0) },
+      data: { merchant_id: merchant.id, category_id: categoryId, name, description: description || null, image: normalizeImage(input.image), price: itemPrice, original_price: input.originalPrice === undefined || input.originalPrice === "" ? null : decimal(input.originalPrice, "菜品原价", 0.01).toDecimalPlaces(2), option_groups: optionGroups.length ? optionGroups : Prisma.JsonNull, stock, sort_order: intOr(input.sortOrder, 0) },
     });
     return mapMenuItem(item);
   }
 
-  async updateMenuItem(input: { ownerId: number; merchantId: number; itemId: number; categoryId?: unknown; name?: unknown; description?: unknown; image?: unknown; price?: unknown; originalPrice?: unknown; stock?: unknown; sortOrder?: unknown; isActive?: unknown }) {
+  async updateMenuItem(input: { ownerId: number; merchantId: number; itemId: number; categoryId?: unknown; name?: unknown; description?: unknown; image?: unknown; price?: unknown; originalPrice?: unknown; optionGroups?: unknown; stock?: unknown; sortOrder?: unknown; isActive?: unknown }) {
     await getOwnedMerchant(input.merchantId, input.ownerId);
     const item = await prisma.menuItem.findFirst({ where: { id: input.itemId, merchant_id: input.merchantId } });
     if (!item) throw new FoodError(404, "菜品不存在");
@@ -389,6 +520,10 @@ export class FoodService {
     }
     if (input.price !== undefined) data.price = decimal(input.price, "菜品价格", 0.01).toDecimalPlaces(2);
     if (input.originalPrice !== undefined) data.original_price = input.originalPrice === null || input.originalPrice === "" ? null : decimal(input.originalPrice, "菜品原价", 0.01).toDecimalPlaces(2);
+    if (input.optionGroups !== undefined) {
+      const optionGroups = parseFoodOptionGroups(input.optionGroups);
+      data.option_groups = optionGroups.length ? optionGroups : Prisma.JsonNull;
+    }
     if (input.stock !== undefined) {
       const stock = intOr(input.stock, -2);
       if (stock < -1) throw new FoodError(400, "库存不合法");
@@ -441,35 +576,53 @@ export class FoodService {
     if (!updated.count) throw new FoodError(404, "菜品分类不存在");
   }
 
-  async quoteOrder(input: { merchantId: unknown; items: unknown }) {
+  async quoteOrder(input: { merchantId: unknown; items: unknown; userId?: number; userCouponId?: unknown }) {
     const merchantId = positiveId(input.merchantId, "商家 ID");
     if (!Array.isArray(input.items) || input.items.length === 0 || input.items.length > 30) throw new FoodError(400, "请选择 1-30 个菜品");
     const quantities = new Map<number, number>();
-    for (const raw of input.items) {
+    const requestedLines = input.items.map((raw) => {
       const itemId = positiveId((raw as any)?.menu_item_id ?? (raw as any)?.menuItemId ?? (raw as any)?.id, "菜品 ID");
       const quantity = intOr((raw as any)?.quantity, 0);
       if (quantity < 1 || quantity > 99) throw new FoodError(400, "菜品数量应为 1-99");
-      quantities.set(itemId, (quantities.get(itemId) ?? 0) + quantity);
-    }
+      const totalQuantity = (quantities.get(itemId) ?? 0) + quantity;
+      if (totalQuantity > 99) throw new FoodError(400, "单个菜品最多购买 99 份");
+      quantities.set(itemId, totalQuantity);
+      return { menuItemId: itemId, quantity, selectedOptions: (raw as any)?.selected_options ?? (raw as any)?.selectedOptions ?? (raw as any)?.options };
+    });
     const merchant = await prisma.merchant.findFirst({ where: { id: merchantId, status: MerchantStatus.APPROVED, is_open: true } });
-    if (!merchant) throw new FoodError(409, "商家暂未营业");
+    if (!merchant || !merchantAvailability(merchant).isOrderable) throw new FoodError(409, "商家当前不在营业时段");
     const menuItems = await prisma.menuItem.findMany({ where: { merchant_id: merchant.id, id: { in: Array.from(quantities.keys()) }, is_active: true } });
     if (menuItems.length !== quantities.size) throw new FoodError(409, "购物车中存在已下架菜品");
     for (const item of menuItems) {
       const quantity = quantities.get(item.id) ?? 0;
       if (item.stock >= 0 && item.stock < quantity) throw new FoodError(409, `${item.name} 库存不足`);
     }
+    const menuItemMap = new Map(menuItems.map((item) => [item.id, item]));
+    const lines = requestedLines.map((request) => {
+      const item = menuItemMap.get(request.menuItemId)!;
+      const selectedOptions = parseSelectedFoodOptions(request.selectedOptions, savedFoodOptionGroups(item.option_groups));
+      const unitPrice = item.price.plus(selectedOptions.reduce((sum, option) => sum.plus(option.price_delta), new Prisma.Decimal(0))).toDecimalPlaces(2);
+      if (unitPrice.lte(0)) throw new FoodError(400, `${item.name}规格价格不合法`);
+      return { menuItem: item, quantity: request.quantity, selectedOptions, unitPrice };
+    });
     const settings = await getSettings();
-    const itemAmount = menuItems.reduce((sum, item) => sum.plus(item.price.mul(quantities.get(item.id) ?? 0)), new Prisma.Decimal(0)).toDecimalPlaces(2);
+    const itemAmount = lines.reduce((sum, line) => sum.plus(line.unitPrice.mul(line.quantity)), new Prisma.Decimal(0)).toDecimalPlaces(2);
     if (itemAmount.lt(merchant.min_order_amount)) throw new FoodError(409, `该商家起送金额为 ¥${merchant.min_order_amount.toFixed(2)}`);
     const deliveryFee = settings.deliveryFee.toDecimalPlaces(2);
     const commissionRate = merchant.commission_rate.toDecimalPlaces(4);
     const commissionAmount = itemAmount.mul(commissionRate).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
     const totalAmount = itemAmount.plus(deliveryFee).toDecimalPlaces(2);
-    return { merchant, menuItems, quantities, settings, itemAmount, deliveryFee, commissionRate, commissionAmount, totalAmount };
+    const userCouponId = stringValue(input.userCouponId) || null;
+    let discountAmount = new Prisma.Decimal(0);
+    if (userCouponId) {
+      if (!input.userId) throw new FoodError(401, "请先登录后使用优惠券");
+      try { discountAmount = (await prisma.$transaction((tx) => quoteUserCoupon(tx, input.userId!, userCouponId, totalAmount))).discountAmount; }
+      catch (error) { if (error instanceof CouponError) throw new FoodError(error.status, error.message); throw error; }
+    }
+    return { merchant, menuItems, quantities, lines, settings, itemAmount, deliveryFee, commissionRate, commissionAmount, totalAmount, userCouponId, discountAmount, payableAmount: totalAmount.minus(discountAmount).toDecimalPlaces(2) };
   }
 
-  async createOrder(input: { userId: number; merchantId: unknown; items: unknown; deliveryAddress: unknown; deliveryLat?: unknown; deliveryLng?: unknown; contactPhone?: unknown; remark?: unknown }) {
+  async createOrder(input: { userId: number; merchantId: unknown; userCouponId?: unknown; items: unknown; deliveryAddress: unknown; deliveryLat?: unknown; deliveryLng?: unknown; contactPhone?: unknown; remark?: unknown }) {
     const address = stringValue(input.deliveryAddress);
     const contactPhone = stringValue(input.contactPhone);
     const remark = stringValue(input.remark);
@@ -477,18 +630,18 @@ export class FoodService {
     const deliveryLng = coordinate(input.deliveryLng, -180, 180, "送达经度");
     if (!address || address.length > 180 || contactPhone.length > 30 || remark.length > 500 || (deliveryLat === null) !== (deliveryLng === null)) throw new FoodError(400, "配送信息不合法");
     await Promise.all([ensureSafeText(address, "配送地址"), ensureSafeText(remark, "订单备注")]);
-    const quote = await this.quoteOrder({ merchantId: input.merchantId, items: input.items });
+    const quote = await this.quoteOrder({ merchantId: input.merchantId, items: input.items, userId: input.userId, userCouponId: input.userCouponId });
     const now = new Date();
     const paymentExpireAt = new Date(now.getTime() + quote.settings.paymentTimeoutMinutes * 60 * 1000);
     const orderNo = `FO${now.getTime().toString(36).toUpperCase()}${Math.floor(1000 + Math.random() * 9000)}`;
     const order = await prisma.foodOrder.create({
       data: {
-        order_no: orderNo, user_id: input.userId, merchant_id: quote.merchant.id,
+        order_no: orderNo, user_id: input.userId, merchant_id: quote.merchant.id, user_coupon_id: quote.userCouponId,
         delivery_address: address, delivery_lat: deliveryLat, delivery_lng: deliveryLng, contact_phone: contactPhone || null, remark: remark || null,
-        item_amount: quote.itemAmount, delivery_fee: quote.deliveryFee, discount_amount: 0, commission_rate: quote.commissionRate, commission_amount: quote.commissionAmount,
-        total_amount: quote.totalAmount, payable_amount: quote.totalAmount, merchant_income: quote.itemAmount.minus(quote.commissionAmount), runner_income: quote.deliveryFee.plus(quote.settings.runnerCompletionReward), platform_income: quote.commissionAmount,
+        item_amount: quote.itemAmount, delivery_fee: quote.deliveryFee, discount_amount: quote.discountAmount, commission_rate: quote.commissionRate, commission_amount: quote.commissionAmount,
+        total_amount: quote.totalAmount, payable_amount: quote.payableAmount, merchant_income: quote.itemAmount.minus(quote.commissionAmount), runner_income: quote.deliveryFee.plus(quote.settings.runnerCompletionReward), platform_income: quote.commissionAmount,
         payment_expire_at: paymentExpireAt,
-        items: { create: quote.menuItems.map((item) => ({ menu_item_id: item.id, item_name: item.name, unit_price: item.price, quantity: quote.quantities.get(item.id) ?? 0 })) },
+        items: { create: quote.lines.map((line) => ({ menu_item_id: line.menuItem.id, item_name: line.menuItem.name, unit_price: line.unitPrice, selected_options: line.selectedOptions.length ? line.selectedOptions : Prisma.JsonNull, quantity: line.quantity })) },
         timelines: { create: { to_status: FoodOrderStatus.PENDING_PAYMENT, actor_id: input.userId, actor_role: "USER", note: "订单已创建，等待支付" } },
       }, include: orderInclude,
     });
@@ -503,6 +656,10 @@ export class FoodService {
       if (order.status !== FoodOrderStatus.PENDING_PAYMENT) throw new FoodError(409, "当前订单不可支付");
       if (order.payment_expire_at && order.payment_expire_at <= new Date()) throw new FoodError(409, "订单支付已超时，请重新下单");
       const payableAmount = order.payable_amount.gt(0) ? order.payable_amount : order.total_amount;
+      if (order.user_coupon_id) {
+        try { await consumeUserCoupon(tx, input.userId, order.user_coupon_id, order.total_amount, undefined, order.id); }
+        catch (error) { if (error instanceof CouponError) throw new FoodError(error.status, error.message); throw error; }
+      }
       const wallet = await tx.userWallet.upsert({ where: { user_id: input.userId }, update: {}, create: { user_id: input.userId } });
       if (wallet.balance.lt(payableAmount)) throw new FoodError(409, "钱包余额不足，请先充值");
       for (const item of order.items) {

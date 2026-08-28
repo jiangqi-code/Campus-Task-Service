@@ -1,6 +1,6 @@
 import cron, { type ScheduledTask } from "node-cron";
 // @ts-ignore
-import { OrderStatus, Prisma, PrismaClient, TaskStatus } from "@prisma/client";
+import { FoodOrderStatus, OrderStatus, Prisma, PrismaClient, TaskStatus } from "@prisma/client";
 import { notificationService } from "./notification.service";
 import { websocketService } from "./websocket.service";
 import { creditService } from "./credit.service";
@@ -110,6 +110,7 @@ export class TimeoutService {
       await this.processPendingTaskTimeout(config.pendingTaskMinutes);
       await this.processAcceptedNoPickupTimeout(config.acceptedNoPickupMinutes);
       await this.processPickedNoCompleteTimeout(config.pickedNoCompleteMinutes);
+      await this.processFoodPaymentTimeout();
       console.log('[timeout] runOnce 执行完成');
     } finally {
       this.running = false;
@@ -265,6 +266,30 @@ export class TimeoutService {
           const message = err instanceof Error ? err.message : String(err);
           console.error("[timeout.pendingTask] failed:", { taskId: row.id, message });
         });
+    }
+  }
+
+  private async processFoodPaymentTimeout() {
+    const now = new Date();
+    const candidates = await prisma.foodOrder.findMany({
+      where: { status: FoodOrderStatus.PENDING_PAYMENT, payment_expire_at: { lte: now } },
+      select: { id: true, user_id: true },
+      take: 200,
+      orderBy: { payment_expire_at: "asc" },
+    });
+
+    for (const row of candidates) {
+      const cancelled = await prisma.$transaction(async (tx) => {
+        const changed = await tx.foodOrder.updateMany({
+          where: { id: row.id, status: FoodOrderStatus.PENDING_PAYMENT, payment_expire_at: { lte: now } },
+          data: { status: FoodOrderStatus.CANCELLED, cancelled_at: now, cancel_reason: "支付超时自动关闭" },
+        });
+        if (!changed.count) return false;
+        await tx.foodOrderTimeline.create({ data: { food_order_id: row.id, from_status: FoodOrderStatus.PENDING_PAYMENT, to_status: FoodOrderStatus.CANCELLED, actor_role: "SYSTEM", note: "订单超时未支付，系统自动关闭" } });
+        await tx.message.create({ data: { user_id: row.user_id, sender_name: "系统", type: "system", title: "外卖订单已自动关闭", content: `订单 #${row.id} 超时未支付，已自动关闭。`, related_id: row.id, conversation_id: `food:${row.id}`, is_read: false } });
+        return true;
+      });
+      if (cancelled) void notificationService.notifyFoodOrderStatusChanged({ orderId: row.id, fromStatus: FoodOrderStatus.PENDING_PAYMENT, toStatus: FoodOrderStatus.CANCELLED });
     }
   }
 

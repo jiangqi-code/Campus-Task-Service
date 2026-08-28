@@ -128,12 +128,12 @@ export async function quoteUserCoupon(tx: Prisma.TransactionClient, userId: numb
   return { row, ...calculateDiscount(row.coupon, orderAmount) }
 }
 
-export async function consumeUserCoupon(tx: Prisma.TransactionClient, userId: number, userCouponId: string, orderAmount: Prisma.Decimal.Value, taskId?: number) {
+export async function consumeUserCoupon(tx: Prisma.TransactionClient, userId: number, userCouponId: string, orderAmount: Prisma.Decimal.Value, taskId?: number, foodOrderId?: number) {
   const quote = await quoteUserCoupon(tx, userId, userCouponId, orderAmount)
   const updated = await tx.userCoupon.updateMany({ where: { id: userCouponId, user_id: userId, status: UserCouponStatus.UNUSED }, data: { status: UserCouponStatus.USED, used_at: new Date() } })
   if (!updated.count) throw new CouponError(409, '优惠券已被使用')
   await tx.coupon.update({ where: { id: quote.row.coupon_id }, data: { used_count: { increment: 1 } } })
-  await tx.couponLog.create({ data: { user_id: userId, coupon_id: quote.row.coupon_id, action: CouponAction.USE, detail: { userCouponId, taskId, orderAmount: quote.orderAmount.toFixed(2), discountAmount: quote.discountAmount.toFixed(2) } } })
+  await tx.couponLog.create({ data: { user_id: userId, coupon_id: quote.row.coupon_id, action: CouponAction.USE, detail: { userCouponId, taskId, foodOrderId, orderAmount: quote.orderAmount.toFixed(2), discountAmount: quote.discountAmount.toFixed(2) } } })
   return quote
 }
 
